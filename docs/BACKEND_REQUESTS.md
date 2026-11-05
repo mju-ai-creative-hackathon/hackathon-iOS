@@ -3,20 +3,13 @@
 iOS 앱에서 아직 목업으로 돌고 있는 기능과, 붙이기 위해 필요한 API입니다.
 필드 이름·경로는 제안이며 백엔드에서 정해주면 앱을 맞춥니다.
 
-## 1. 커뮤니티(숏폼 공유 피드) — 우선순위 높음
+## 1. 커뮤니티 — 탐색/등록/삭제는 연결 완료 (#4)
 
-현재 앱의 커뮤니티 탭은 번들 목업 영상 5개만 보여주고, "커뮤니티에 공유하기"는 기기 메모리에만 추가됩니다(앱 재시작 시 사라짐).
+남은 요청:
 
-| 메서드 | 경로 | 용도 |
-| --- | --- | --- |
-| POST | `/api/posts` | 완성된 렌더를 피드에 게시 `{ renderId, caption, placeId? }` |
-| GET | `/api/posts?page=0&size=10` | 피드(최신순). 로그인 시 `liked`/`saved` 채움 |
-| GET | `/api/posts/{id}` | 단건 |
-| DELETE | `/api/posts/{id}` | 내 게시물 삭제 |
-| PUT/DELETE | `/api/posts/{id}/like` | 좋아요 켜기/끄기 (멱등) |
-| GET/POST | `/api/posts/{id}/comments` | 댓글 목록/작성 |
-
-피드 항목에 필요한 필드: `id, author{id,name,profileImageUrl}, videoUrl, thumbnailUrl, caption, place{ id, title, district }?, tourCourseTitle?, likeCount, commentCount, liked, createdAt`
+- 좋아요 `PUT/DELETE /api/community/posts/{id}/like`, 댓글 `GET/POST /api/community/posts/{id}/comments`
+- 내 게시물 목록 `GET /api/community/posts/mine` — explore 는 로그인 시 본인 글을 제외해서, 올린 뒤 내 글을 볼 곳이 없음
+- 숏폼 렌더 결과를 바로 게시하는 방법(`renderId` 로 게시) — 지금은 앱이 결과 영상을 내려받아 다시 업로드해야 함
 
 ## 2. 탐색하기(여행 도장깨기) 코스·미션
 

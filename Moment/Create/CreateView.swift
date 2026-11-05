@@ -27,6 +27,8 @@ struct CreateView: View {
     @State private var aiUnavailable = false      // AI 서버 미연결 → 기기 미리보기 제안
     @State private var isLocalPreview = false
     @State private var needsLogin = false
+    @State private var isSharing = false
+    @State private var shareError: String?
 
     /// 백엔드 제작 조건: 5~20개
     static let minCount = 5
@@ -330,15 +332,19 @@ struct CreateView: View {
             if result != nil {
                 Button(action: shareResult) {
                     HStack(spacing: 6) {
-                        Image(systemName: shared ? "checkmark" : "paperplane.fill").font(.system(size: 13, weight: .bold))
-                        Text(shared ? "커뮤니티에 공유했어요" : "커뮤니티에 공유하기")
+                        if isSharing { ProgressView().tint(.white) }
+                        else { Image(systemName: shared ? "checkmark" : "paperplane.fill").font(.system(size: 13, weight: .bold)) }
+                        Text(shared ? "커뮤니티에 공유했어요" : (isSharing ? "올리는 중…" : "커뮤니티에 공유하기"))
                     }
                     .font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
                     .frame(maxWidth: .infinity).frame(height: 50)
                     .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(shared ? Theme.gray : Theme.red))
                 }
-                .disabled(shared)
+                .disabled(shared || isSharing)
                 .padding(.top, 22)
+                if let shareError {
+                    Text(shareError).font(.system(size: 12)).foregroundStyle(Theme.red).padding(.top, 8)
+                }
                 if isLocalPreview {
                     Text("AI 서버 연결 전이라 기기에서 만든 미리보기예요.")
                         .font(.system(size: 11)).foregroundStyle(Theme.gray).padding(.top, 8)
@@ -452,10 +458,42 @@ struct CreateView: View {
         }
     }
 
+    /// 커뮤니티 게시 (POST /api/community/posts)
+    /// AI 결과 영상이 있으면 영상 + 표지 사진, 없으면(기기 미리보기) 고른 사진 최대 10장을 올린다.
     private func shareResult() {
-        guard let result, !shared else { return }
-        store.publish(result)
-        shared = true
+        guard result != nil, !shared, !isSharing else { return }
+        guard auth.user != nil else { needsLogin = true; return }
+        isSharing = true; shareError = nil
+        let req = request, video = resultVideo
+        Task {
+            defer { isSharing = false }
+            do {
+                let photos = req.media.filter { if case .photo = $0.kind { true } else { false } }
+                var files: [UploadFile] = []
+                var cover: UploadFile?
+                if let video {
+                    let (data, _) = try await URLSession.shared.data(from: video)
+                    files = [UploadFile(data: data, filename: "shortform.mp4", mimeType: "video/mp4")]
+                    if let first = photos.first ?? req.media.first {
+                        cover = try ShortformPipeline.uploadFile(first, index: 0, maxImage: 10_485_760, maxVideo: 0)
+                    }
+                } else {
+                    files = try photos.prefix(10).enumerated().map { i, m in
+                        try ShortformPipeline.uploadFile(m, index: i, maxImage: 10_485_760, maxVideo: 0)
+                    }
+                }
+                guard !files.isEmpty else { throw ShortformPipeline.Failure.failed("올릴 사진이 없어요.") }
+                let title = String((req.caption.isEmpty ? req.style.headline : req.caption).prefix(100))
+                let body = CommunityCreateBody(title: title, caption: nil,
+                                               tags: ["서울", req.style.rawValue, req.mood.rawValue])
+                _ = try await auth.authorized {
+                    try await APIClient.shared.createCommunityPost(body, files: files, cover: cover, token: $0)
+                }
+                withAnimation { shared = true }
+            } catch {
+                shareError = (error as? LocalizedError)?.errorDescription ?? "공유하지 못했어요. 다시 시도해 주세요."
+            }
+        }
     }
 
     private func reset() {

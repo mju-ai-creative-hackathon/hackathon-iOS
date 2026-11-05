@@ -8,7 +8,7 @@ struct RootTabView: View {
             switch store.selectedTab {
             case .home: HomeView()
             case .create: CreateView()
-            case .reels: ReelsView()
+            case .reels: CommunityView()
             case .tour: TourView()
             case .more: MoreView()
             }
@@ -32,7 +32,7 @@ struct RootTabView: View {
     }
 
     private var tabBar: some View {
-        let dark = store.selectedTab == .reels
+        let dark = false
         return VStack(spacing: 0) {
             Rectangle().fill(dark ? Color.white.opacity(0.12) : Theme.line).frame(height: 0.5)
             HStack(spacing: 0) {

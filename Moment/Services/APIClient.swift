@@ -119,6 +119,37 @@ struct UploadFile {
     let mimeType: String
 }
 
+// MARK: - 커뮤니티 DTO (Backend: com.example.backend.community.CommunityDtos)
+
+struct CommunityAuthor: Codable, Hashable { let id: UUID; let name: String; let profileImageUrl: String? }
+struct CommunityMedia: Codable, Hashable, Identifiable {
+    let id: UUID
+    let kind: String            // PHOTO | VIDEO
+    let contentType: String
+    let sizeBytes: Int
+    let url: String             // 백엔드 상대 경로 (공개)
+    var isVideo: Bool { kind == "VIDEO" }
+}
+struct CommunityPost: Codable, Hashable, Identifiable {
+    let id: UUID
+    let title: String
+    let caption: String?
+    let author: CommunityAuthor
+    let tags: [String]
+    let thumbnailUrl: String?
+    let media: [CommunityMedia]
+    let createdAt: Date?
+}
+struct CommunityFeed: Codable {
+    let items: [CommunityPost]
+    let seed: UUID?
+    let snapshot: String?       // 그대로 다음 요청에 되돌려 보냄
+    let nextCursor: String?
+    let hasNext: Bool
+}
+struct CommunityTag: Codable, Hashable { let tag: String; let postCount: Int }
+struct CommunityCreateBody: Encodable { let title: String; let caption: String?; let tags: [String] }
+
 struct SignupBody: Encodable { let email: String; let name: String; let password: String }
 struct GoogleLoginBody: Encodable { let idToken: String }
 struct LoginBody: Encodable { let email: String; let password: String }
@@ -166,7 +197,11 @@ struct APIClient {
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .custom { dec in
-            let s = try dec.singleValueContainer().decode(String.self)
+            var s = try dec.singleValueContainer().decode(String.self)
+            // 서버 Instant 는 소수점 6~9자리 → ISO8601DateFormatter 가 읽을 수 있게 3자리로 자름
+            if let r = s.range(of: #"\.\d+"#, options: .regularExpression) {
+                s.replaceSubrange(r, with: String(s[r].prefix(4)))
+            }
             let f = ISO8601DateFormatter()
             f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let date = f.date(from: s) { return date }
@@ -283,6 +318,65 @@ struct APIClient {
     func render(projectId: UUID, renderId: UUID, token: String) async throws -> ShortformRender {
         try await send("GET", "/api/shortforms/\(projectId.uuidString.lowercased())/renders/\(renderId.uuidString.lowercased())",
                        token: token, body: Optional<LoginBody>.none)
+    }
+
+    // MARK: 커뮤니티 (Backend /api/community/posts)
+
+    /// 랜덤 탐색. 다음 페이지는 응답의 seed/snapshot/nextCursor 를 그대로 전달
+    func explore(keyword: String?, tag: String?, size: Int = 21, seed: UUID?, snapshot: String?, cursor: String?,
+                 token: String?) async throws -> CommunityFeed {
+        var q = [URLQueryItem(name: "size", value: "\(size)")]
+        if let keyword, !keyword.isEmpty { q.append(.init(name: "keyword", value: keyword)) }
+        if let tag { q.append(.init(name: "tag", value: tag)) }
+        if let seed { q.append(.init(name: "seed", value: seed.uuidString.lowercased())) }
+        if let snapshot { q.append(.init(name: "snapshot", value: snapshot)) }
+        if let cursor { q.append(.init(name: "cursor", value: cursor)) }
+        return try await send("GET", "/api/community/posts/explore", query: q, token: token, body: Optional<LoginBody>.none)
+    }
+
+    func communityTags(limit: Int = 15, token: String?) async throws -> [CommunityTag] {
+        try await send("GET", "/api/community/posts/tags", query: [.init(name: "limit", value: "\(limit)")],
+                       token: token, body: Optional<LoginBody>.none)
+    }
+
+    func communityPost(id: UUID) async throws -> CommunityPost {
+        try await send("GET", "/api/community/posts/\(id.uuidString.lowercased())", body: Optional<LoginBody>.none)
+    }
+
+    func deleteCommunityPost(id: UUID, token: String) async throws {
+        let _: EmptyResponse = try await send("DELETE", "/api/community/posts/\(id.uuidString.lowercased())",
+                                              token: token, body: Optional<LoginBody>.none)
+    }
+
+    /// 게시물 등록: `post`(JSON) + `files`(1~10) + 첫 파일이 영상이면 `cover`(사진) 필수
+    func createCommunityPost(_ post: CommunityCreateBody, files: [UploadFile], cover: UploadFile?,
+                             token: String) async throws -> CommunityPost {
+        var parts: [(name: String, file: UploadFile)] = [("post", UploadFile(data: try JSONEncoder().encode(post),
+                                                                              filename: "post.json", mimeType: "application/json"))]
+        parts += files.map { ("files", $0) }
+        if let cover { parts.append(("cover", cover)) }
+        let (body, type) = Self.multipart(parts)
+        return try await send("POST", "/api/community/posts", token: token, rawBody: body, contentType: type, timeout: 180)
+    }
+
+    /// 백엔드 상대 경로(/api/...) → 절대 URL
+    func absolute(_ path: String?) -> URL? {
+        guard let path, !path.isEmpty else { return nil }
+        if path.hasPrefix("http") { return URL(string: path) }
+        return URL(string: path, relativeTo: baseURL)?.absoluteURL
+    }
+
+    static func multipart(_ parts: [(name: String, file: UploadFile)]) -> (Data, String) {
+        let boundary = "SeollogBoundary-\(UUID().uuidString)"
+        var body = Data()
+        for p in parts {
+            let name = p.file.filename.replacingOccurrences(of: "\"", with: "")
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(p.name)\"; filename=\"\(name)\"\r\nContent-Type: \(p.file.mimeType)\r\n\r\n".utf8))
+            body.append(p.file.data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+        return (body, "multipart/form-data; boundary=\(boundary)")
     }
 
     private func send<B: Encodable, R: Decodable>(_ method: String, _ path: String, query: [URLQueryItem] = [],

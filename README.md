@@ -26,7 +26,7 @@ open Moment.xcodeproj
 | --- | --- | --- |
 | 홈 | 지도, 서울에서 뭐 하지?(장소·카테고리·북마크) | `/api/places` 연결 |
 | 만들기 | 사진 선택 → 스타일·분위기 → 완성 | `/api/shortforms` 연결 (AI 서버 미연결 시 기기 미리보기) |
-| 커뮤니티 | 숏폼 피드 | 목업 — API 필요 |
+| 커뮤니티 | 검색·인기 태그·랜덤 탐색 그리드, 상세, 내 글 삭제, 만들기에서 게시 | `/api/community/posts` 연결 (좋아요·댓글은 서버 미지원) |
 | 탐색하기 | 여행 도장깨기 코스·미션 | 목업 — API 필요 |
 | 더보기 | 계정, 내 북마크, 로그아웃, 회원탈퇴 | `/api/auth`, `/api/places/bookmarks` |
 
@@ -49,7 +49,8 @@ Moment/
   Services/   APIClient(DTO 포함), 목업 생성기
   Home/       홈, 장소 API 상태(PlacesStore)
   Create/     만들기(숏폼 파이프라인)
-  Reels/      커뮤니티 피드
+  Community/  커뮤니티 탐색·상세
+  Reels/      영상 플레이어(공용)
   Tour/       도장깨기
   Theme/ Components/ Models/ Resources/
 Config/Info.plist   API 주소, Google 설정, ATS
