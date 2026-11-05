@@ -16,7 +16,7 @@ struct TourView: View {
     @State private var camera: MapCameraPosition = .userLocation(fallback: Self.seoulFallback)
     @FocusState private var typing: Bool
 
-    enum Route: Hashable { case course(Int64), recommendations, all }
+    enum Route: Hashable { case course(Int64), recommendations, all, saved }
 
     private static let seoulFallback: MapCameraPosition = .region(MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 37.5665, longitude: 126.978),
@@ -58,6 +58,7 @@ struct TourView: View {
                 case .course(let id): CourseDetailView(courseId: id)
                 case .recommendations: CourseDetailView(options: tour.recommendations)
                 case .all: AllCoursesView()
+                case .saved: SavedCoursesView { path.append(.course($0)) }
                 }
             }
         }
@@ -92,11 +93,13 @@ struct TourView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 20, weight: .medium))
             }
             .accessibilityLabel("코스 검색")
-            Image(systemName: "bell").font(.system(size: 20, weight: .medium))
-                .overlay(alignment: .topTrailing) {
-                    Circle().fill(Theme.red).frame(width: 7, height: 7).offset(x: 1, y: -1)
-                }
-                .accessibilityLabel("알림")
+            Button {
+                guard auth.user != nil else { needsLogin = true; return }
+                path.append(.saved)
+            } label: {
+                Image(systemName: "bookmark").font(.system(size: 20, weight: .medium))
+            }
+            .accessibilityLabel("저장한 코스")
         }
         .foregroundStyle(Theme.ink)
         .padding(.horizontal, 20)

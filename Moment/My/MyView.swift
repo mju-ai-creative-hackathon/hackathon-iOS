@@ -6,7 +6,6 @@ import CoreLocation
 struct MyView: View {
     @Environment(DiaryStore.self) private var diary
     @Environment(CommunityStore.self) private var community
-    @Environment(AppStore.self) private var store
     @Environment(AuthSession.self) private var auth
     @Environment(TourStore.self) private var tour
 
@@ -28,7 +27,7 @@ struct MyView: View {
             .navigationTitle("나만의 기록")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.bg, for: .navigationBar)
-            .navigationDestination(for: CourseSummary.self) { c in CourseDetailView(courseId: c.id) }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { deckToolbar } }
         }
         .task { await reload() }
         .sheet(isPresented: $pickingCourse) {
@@ -87,8 +86,7 @@ struct MyView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if let a = diary.active { activeBanner(a) }
                 diaryCard
-                vlogSection
-                savedSection
+                MyVlogSection(onOpenPost: { selectedPost = $0 })
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -131,65 +129,49 @@ struct MyView: View {
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.red.opacity(0.25), lineWidth: 1))
     }
 
-    // MARK: 기록 카드 (캐러셀)
+    // MARK: 기록 덱 (한 장씩 넘기는 카드 스택)
 
     @ViewBuilder
     private var diaryCard: some View {
         let list = completed
-        VStack(spacing: 0) {
-            if list.isEmpty {
+        if list.isEmpty {
+            VStack(spacing: 0) {
                 if diary.isLoading { ProgressView().frame(maxWidth: .infinity, minHeight: 300) }
                 else { emptyDiary }
-            } else {
-                let i = min(index, list.count - 1)
-                ZStack {
-                    MyDiaryPage(summary: list[i],
-                                onEdit: { editing = list[i] },
-                                onDelete: { deleting = list[i] })
-                        .id(list[i].id)
-                        .transition(.opacity)
-                    HStack {
-                        arrow("chevron.left", enabled: i > 0) { index = i - 1 }
-                        Spacer()
-                        arrow("chevron.right", enabled: i < list.count - 1) { index = i + 1 }
-                    }
-                    .padding(.horizontal, 2)
-                    .offset(y: -95)
-                }
-                .animation(.easeInOut(duration: 0.2), value: i)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 24).onEnded { v in
-                    guard abs(v.translation.width) > abs(v.translation.height) else { return }
-                    if v.translation.width < -40, i < list.count - 1 { index = i + 1 }
-                    if v.translation.width > 40, i > 0 { index = i - 1 }
-                })
-                if list.count > 1 {
-                    HStack(spacing: 5) {
-                        ForEach(0..<min(list.count, 10), id: \.self) { k in
-                            Capsule().fill(k == i ? Theme.red : Theme.line)
-                                .frame(width: k == i ? 14 : 6, height: 6)
-                        }
-                    }
-                    .padding(.top, 14)
-                }
             }
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        } else {
+            MyDeck(list: list,
+                   index: Binding(get: { min(index, list.count - 1) }, set: { index = $0 }),
+                   onEdit: { editing = $0 })
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
     }
 
-    private func arrow(_ icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon).font(.system(size: 14, weight: .bold))
-                .foregroundStyle(enabled ? Theme.ink : Theme.gray.opacity(0.4))
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(.white.opacity(0.92)))
-                .shadow(color: .black.opacity(enabled ? 0.12 : 0), radius: 4, y: 1)
+    private var current: DiarySummary? {
+        let list = completed
+        guard !list.isEmpty else { return nil }
+        return list[min(index, list.count - 1)]
+    }
+
+    @ViewBuilder
+    private var deckToolbar: some View {
+        if auth.user != nil, let cur = current {
+            HStack(spacing: 14) {
+                ShareLink(item: MyDeckFormat.shareText(cur, diary.details[cur.id])) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                Menu {
+                    Button { editing = cur } label: { Label("제목·메모 수정", systemImage: "pencil") }
+                    Button(role: .destructive) { deleting = cur } label: { Label("기록 삭제", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Theme.ink)
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0)
     }
 
     private var emptyDiary: some View {
@@ -221,240 +203,303 @@ struct MyView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: 내가 만든 V-log
-
-    private var vlogSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("내가 만든 V-log").font(.system(size: 18, weight: .heavy)).foregroundStyle(Theme.ink)
-            if community.myPosts.isEmpty {
-                VStack(spacing: 10) {
-                    Text("아직 만든 V-log가 없어요").font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.gray)
-                    Button { store.selectedTab = .create } label: {
-                        Text("숏폼 만들기").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.red)
-                            .padding(.horizontal, 16).frame(height: 34)
-                            .background(Capsule().fill(Theme.blueSoft))
-                    }
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 24)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 10) {
-                        ForEach(community.myPosts) { post in
-                            MyVlogCard(post: post, saved: community.saved.contains(post.id),
-                                       onSave: { community.toggleSaved(post.id) })
-                                .onTapGesture { selectedPost = post }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-                .padding(.horizontal, -16)
-            }
-        }
-    }
-
-    // MARK: 내가 저장한 코스
-
-    private var savedSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("내가 저장한 코스").font(.system(size: 18, weight: .heavy)).foregroundStyle(Theme.ink)
-                if !tour.savedCourses.isEmpty {
-                    Text("\(tour.savedCourses.count)").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.red)
-                }
-            }
-            if tour.savedCourses.isEmpty {
-                VStack(spacing: 8) {
-                    Text("저장한 코스가 없어요").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
-                    Text("홈에서 마음에 드는 코스의 북마크를 눌러 저장해 보세요")
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.gray)
-                        .multilineTextAlignment(.center).padding(.horizontal, 16)
-                    Button { store.selectedTab = .home } label: {
-                        Text("코스 둘러보기").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.red)
-                            .padding(.horizontal, 16).frame(height: 34)
-                            .background(Capsule().fill(Theme.blueSoft))
-                    }
-                    .padding(.top, 2)
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 22)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
-            } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(tour.savedCourses) { course in
-                        NavigationLink(value: course) {
-                            MySavedCourseRow(course: course) { unsave(course.id) }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    private func unsave(_ id: Int64) {
-        Task {
-            do { _ = try await tour.setSaved(id, false) }
-            catch { actionError = (error as? LocalizedError)?.errorDescription ?? "저장을 해제하지 못했어요." }
-        }
-    }
 }
 
-// MARK: - 저장한 코스 행
+// MARK: - 기록 덱 (스와이프로 한 장씩 넘김)
 
-private struct MySavedCourseRow: View {
-    let course: CourseSummary
-    var onUnsave: () -> Void
+private struct MyDeck: View {
+    let list: [DiarySummary]
+    @Binding var index: Int
+    var onEdit: (DiarySummary) -> Void
+
+    @State private var drag: CGFloat = 0
+    @State private var horizontal: Bool?
+    @State private var flying = false
+
+    private var window: [Int] {
+        guard !list.isEmpty else { return [] }
+        return Array(max(0, index - 1)...min(list.count - 1, index + 2))
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Theme.blueSoft
-                .frame(width: 72, height: 72)
-                .overlay { CachedImage(url: CourseFormat.imageURL(course.thumbnailUrl)) }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    if let r = course.region, !r.isEmpty {
-                        Text(r).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.red)
-                    }
-                    if course.source == "AI" {
-                        Text("AI").font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
-                            .padding(.horizontal, 5).frame(height: 15)
-                            .background(Capsule().fill(Theme.red))
-                    }
+        VStack(spacing: 14) {
+            ZStack(alignment: .top) {
+                ForEach(window, id: \.self) { k in
+                    let rel = k - index
+                    MyDeckCard(summary: list[k], onEdit: { onEdit(list[k]) })
+                        .modifier(MyDeckPlacement(pos: position(rel), front: rel == 0, drag: drag))
+                        .zIndex(rel == 0 ? 10 : (rel > 0 ? Double(10 - rel) : 8.5))
+                        .allowsHitTesting(rel == 0)
                 }
-                Text(course.title).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
-                if !course.stopNames.isEmpty {
-                    Text(course.stopNames.joined(separator: " → "))
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.gray).lineLimit(1)
-                }
-                Text("\(CourseFormat.duration(course.totalMinutes)) · \(CourseFormat.cost(course.estimatedCost))")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.gray)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+            .simultaneousGesture(swipe)
 
-            Button(action: onUnsave) {
-                Image(systemName: "bookmark.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.red)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            thumbStrip
+            controls
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// 덱 안 위치(0 = 맨 앞). 드래그하는 동안 다음/이전 카드가 앞으로 조금씩 나온다
+    private func position(_ rel: Int) -> CGFloat {
+        let p = min(abs(drag) / 160, 1)
+        var pos = CGFloat(rel)
+        if drag < 0, rel > 0 { pos -= p }
+        if drag > 0, rel < 0 { pos += p }
+        return pos
+    }
+
+    private var swipe: some Gesture {
+        DragGesture(minimumDistance: 15)
+            .onChanged { v in
+                guard !flying else { return }
+                if horizontal == nil { horizontal = abs(v.translation.width) > abs(v.translation.height) }
+                guard horizontal == true else { return }
+                var w = v.translation.width
+                if (w < 0 && index >= list.count - 1) || (w > 0 && index <= 0) { w *= 0.3 }
+                drag = w
+            }
+            .onEnded { v in
+                let wasHorizontal = horizontal == true
+                horizontal = nil
+                guard wasHorizontal, !flying else { return }
+                let w = v.translation.width, pw = v.predictedEndTranslation.width
+                if (w < -90 || pw < -260), index < list.count - 1 { fly(next: true) }
+                else if (w > 90 || pw > 260), index > 0 { fly(next: false) }
+                else { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { drag = 0 } }
+            }
+    }
+
+    private func fly(next: Bool) {
+        guard !flying else { return }
+        let target = index + (next ? 1 : -1)
+        guard list.indices.contains(target) else { return }
+        flying = true
+        withAnimation(.easeOut(duration: 0.2)) {
+            drag = next ? -440 : 440
+        } completion: {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                index = target
+                drag = 0
+            }
+            flying = false
+        }
+    }
+
+    private func jump(_ k: Int) {
+        if k == index + 1 { fly(next: true) }
+        else if k == index - 1 { fly(next: false) }
+        else if k != index { withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { index = k } }
+    }
+
+    private var thumbStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(list.indices, id: \.self) { k in
+                        Button { jump(k) } label: {
+                            MyDeckThumb(date: list[k].recordDate, selected: k == index)
+                        }
+                        .buttonStyle(.plain)
+                        .id(k)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            .onAppear { proxy.scrollTo(index, anchor: .center) }
+            .onChange(of: index) { _, i in
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(i, anchor: .center) }
+            }
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 10) {
+            navButton("arrow.left", enabled: index > 0) { fly(next: false) }
+            navButton("arrow.right", enabled: index < list.count - 1) { fly(next: true) }
+            Spacer()
+            Text("\(index + 1)/\(list.count)")
+                .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.gray)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private func navButton(_ icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 14, weight: .bold))
+                .foregroundStyle(enabled ? Theme.ink : Theme.gray.opacity(0.35))
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(.white))
+                .overlay(Circle().strokeBorder(Theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }
 
-// MARK: - 기록 한 장
+/// 덱 위치에 따른 오프셋·크기·기울기 (앞 카드는 드래그를 따라 3D 로 기운다)
+private struct MyDeckPlacement: ViewModifier {
+    let pos: CGFloat
+    let front: Bool
+    let drag: CGFloat
 
-private struct MyDiaryPage: View {
+    func body(content: Content) -> some View {
+        let a = abs(pos)
+        let x: CGFloat = pos >= 0 ? (pos <= 1 ? 14 * pos : 14 + 12 * (pos - 1)) : 14 * pos
+        let tilt = front ? Double(max(-25, min(25, drag / 8))) : 0
+        let spin = front ? Double(max(-6, min(6, drag / 40))) : 0
+        content
+            .brightness(-0.05 * Double(a))
+            .opacity(a > 2.2 ? 0 : 1 - 0.12 * Double(a))
+            .scaleEffect(1 - 0.05 * a)
+            .rotationEffect(.degrees(Double(2 * pos) + spin))
+            .rotation3DEffect(.degrees(tilt), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .offset(x: x + (front ? drag : 0))
+    }
+}
+
+// MARK: - 덱 카드 한 장
+
+private struct MyDeckCard: View {
     let summary: DiarySummary
     var onEdit: () -> Void
-    var onDelete: () -> Void
 
     @Environment(DiaryStore.self) private var diary
     @State private var loaded = false
 
     private var detail: DiaryDetail? { diary.details[summary.id] }
+    private var done: Bool { (detail?.status ?? summary.status) == "COMPLETED" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ZStack(alignment: .topTrailing) {
-                Group {
-                    if let d = detail, !d.points.isEmpty {
-                        MyFootprintMap(points: d.points).id(d.points.count)
-                    } else {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.blueSoft)
-                            .overlay {
-                                if !loaded { ProgressView() }
-                                else {
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "shoeprints.fill").font(.system(size: 30)).foregroundStyle(Theme.red.opacity(0.7))
-                                        Text("이동 경로가 기록되지 않았어요")
-                                            .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.gray)
-                                    }
-                                }
-                            }
-                    }
-                }
-                .frame(height: 300)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                Menu {
-                    Button { onEdit() } label: { Label("제목·메모 수정", systemImage: "pencil") }
-                    Button(role: .destructive) { onDelete() } label: { Label("삭제", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(.white.opacity(0.92)))
-                        .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
-                }
-                .padding(10)
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            mapArea
 
             HStack(alignment: .firstTextBaseline) {
                 Text(detail?.title ?? summary.title)
-                    .font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(2)
+                    .font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
                 Spacer(minLength: 8)
-                Text(summary.recordDate.replacingOccurrences(of: "-", with: "."))
+                Text(MyDeckFormat.date(summary.recordDate))
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.gray)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("걸음수").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Text("\(summary.steps.formatted()) 걸음")
-                        .font(.system(size: 18, weight: .heavy)).foregroundStyle(Theme.red)
-                }
-                Text(statsLine).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.gray)
-            }
+            stats
 
-            Divider().overlay(Theme.line)
-
-            Button(action: onEdit) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("메모").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
-                        Spacer()
-                        Image(systemName: "square.and.pencil").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.gray)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("메모").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
+                Button(action: onEdit) {
                     let memo = detail?.memo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    Text(memo.isEmpty ? "메모를 남겨보세요" : memo)
-                        .font(.system(size: 14)).foregroundStyle(memo.isEmpty ? Theme.gray.opacity(0.7) : Theme.ink)
-                        .lineLimit(4).multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ZStack(alignment: .topTrailing) {
+                        Text(memo.isEmpty ? "오늘의 여정을 기록해 보세요" : memo)
+                            .font(.system(size: 14))
+                            .foregroundStyle(memo.isEmpty ? Theme.gray.opacity(0.7) : Theme.ink)
+                            .lineLimit(4).multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+                            .padding(.trailing, 22)
+                        Image(systemName: "pencil")
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.gray)
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.line.opacity(0.4)))
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white))
+        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
         .task(id: summary.id) {
             await diary.detail(summary.id)
             loaded = true
         }
     }
 
-    private var statsLine: String {
-        var parts: [String] = []
-        if let end = summary.endedAt { parts.append(MyFormat.duration(end.timeIntervalSince(summary.startedAt))) }
-        if let pts = detail?.points, pts.count > 1 { parts.append(MyFormat.distance(MyFormat.length(pts))) }
-        parts.append("≈\(Int((Double(summary.steps) * 0.04).rounded()))kcal")
-        return parts.joined(separator: " · ")
+    private var mapArea: some View {
+        Group {
+            if let d = detail, !d.points.isEmpty {
+                MyDeckRouteMap(points: d.points).id(d.points.count)
+            } else {
+                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.blueSoft)
+                    .overlay {
+                        if !loaded { ProgressView() }
+                        else {
+                            VStack(spacing: 8) {
+                                Image(systemName: "shoeprints.fill").font(.system(size: 30)).foregroundStyle(Theme.red.opacity(0.7))
+                                Text("이동 경로가 기록되지 않았어요")
+                                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.gray)
+                            }
+                        }
+                    }
+            }
+        }
+        .frame(height: 200)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 4) {
+                Image(systemName: done ? "checkmark.circle.fill" : "record.circle")
+                    .foregroundStyle(done ? Color.green : Theme.red)
+                Text(done ? "기록 완료" : "기록 중").foregroundStyle(done ? Theme.ink : Theme.red)
+            }
+            .font(.system(size: 12, weight: .bold))
+            .padding(.horizontal, 10).frame(height: 28)
+            .background(Capsule().fill(.white))
+            .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+            .padding(10)
+        }
+    }
+
+    private var stats: some View {
+        let pts = detail?.points ?? []
+        let distance = pts.count > 1 ? MyDeckFormat.distanceParts(MyFormat.length(pts)) : ("-", "")
+        return HStack(spacing: 0) {
+            stat("shoeprints.fill", "걸음 수", (summary.steps.formatted(), " 걸음"))
+            divider
+            stat("mappin.and.ellipse", "이동 거리", distance)
+            divider
+            stat("clock", "이동 시간", (MyDeckFormat.hms(summary), ""))
+        }
+        .padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.line.opacity(0.4)))
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Theme.line).frame(width: 1, height: 34)
+    }
+
+    private func stat(_ icon: String, _ label: String, _ value: (String, String)) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 3) {
+                Image(systemName: icon)
+                Text(label)
+            }
+            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.gray)
+            (Text(value.0).font(.system(size: 18, weight: .heavy))
+             + Text(value.1).font(.system(size: 12, weight: .bold)))
+                .foregroundStyle(Theme.red)
+                .lineLimit(1).minimumScaleFactor(0.6)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 4)
     }
 }
 
-// MARK: - 발자취 지도
+// MARK: - 덱 지도 (경로 · 출발/도착 · 중간 지점)
 
-private struct MyFootprintMap: View {
+private struct MyDeckRouteMap: View {
     let points: [DiaryPoint]
 
     private var coords: [CLLocationCoordinate2D] {
         points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+    }
+
+    /// 중간 지점: 일정 간격으로 최대 6개
+    private var mids: [Int] {
+        guard points.count > 2 else { return [] }
+        let step = max((points.count - 1) / 7, 1)
+        return Array(stride(from: step, to: points.count - 1, by: step).prefix(6))
     }
 
     private var region: MKCoordinateRegion {
@@ -462,31 +507,96 @@ private struct MyFootprintMap: View {
         let minLat = lats.min()!, maxLat = lats.max()!, minLng = lngs.min()!, maxLng = lngs.max()!
         return MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2),
-            span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.5, 0.004),
-                                   longitudeDelta: max((maxLng - minLng) * 1.5, 0.004)))
+            span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.6, 0.004),
+                                   longitudeDelta: max((maxLng - minLng) * 1.6, 0.004)))
     }
 
     var body: some View {
+        let c = coords
         Map(initialPosition: .region(region), interactionModes: []) {
-            if coords.count > 1 {
-                MapPolyline(coordinates: coords)
+            if c.count > 1 {
+                MapPolyline(coordinates: c)
                     .stroke(Theme.red, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
             }
-            if let s = coords.first {
-                Annotation("", coordinate: s) { dot(.green) }
+            ForEach(mids, id: \.self) { i in
+                Annotation("", coordinate: c[i]) {
+                    Circle().fill(.white).frame(width: 8, height: 8)
+                        .overlay(Circle().strokeBorder(Theme.red, lineWidth: 1.5))
+                }
             }
-            if coords.count > 1, let e = coords.last {
-                Annotation("", coordinate: e) { dot(Theme.red) }
+            if let s = c.first {
+                Annotation("", coordinate: s) {
+                    Circle().fill(Color.green).frame(width: 22, height: 22)
+                        .overlay(Image(systemName: "play.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(.white))
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                }
+            }
+            if c.count > 1, let e = c.last {
+                Annotation("", coordinate: e, anchor: .bottom) {
+                    Image(systemName: "mappin.circle.fill")
+                        .font(.system(size: 26))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Theme.red)
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                }
             }
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
         .allowsHitTesting(false)
     }
+}
 
-    private func dot(_ c: Color) -> some View {
-        Circle().fill(c).frame(width: 14, height: 14)
-            .overlay(Circle().strokeBorder(.white, lineWidth: 2.5))
-            .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+// MARK: - 썸네일 타일
+
+private struct MyDeckThumb: View {
+    let date: String
+    let selected: Bool
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Image(systemName: "shoeprints.fill").font(.system(size: 10))
+                .foregroundStyle(selected ? Theme.red : Theme.gray.opacity(0.7))
+            Text(MyDeckFormat.shortDate(date))
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(selected ? Theme.red : Theme.ink)
+        }
+        .frame(width: 44, height: 44)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? Theme.blueSoft : .white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(selected ? Theme.red : Theme.line, lineWidth: selected ? 2 : 1))
+        .scaleEffect(selected ? 1.08 : 1)
+        .animation(.easeInOut(duration: 0.2), value: selected)
+    }
+}
+
+// MARK: - 덱 포맷
+
+private enum MyDeckFormat {
+    /// "2026-11-06" → "2026.11.06"
+    static func date(_ s: String) -> String { s.replacingOccurrences(of: "-", with: ".") }
+
+    /// "2026-11-06" → "11.06"
+    static func shortDate(_ s: String) -> String {
+        let parts = s.split(separator: "-")
+        return parts.count == 3 ? "\(parts[1]).\(parts[2])" : s
+    }
+
+    static func distanceParts(_ m: Double) -> (String, String) {
+        m >= 1000 ? (String(format: "%.1f", m / 1000), " km") : ("\(Int(m.rounded()))", " m")
+    }
+
+    static func hms(_ s: DiarySummary) -> String {
+        guard let end = s.endedAt else { return "-" }
+        let t = max(Int(end.timeIntervalSince(s.startedAt)), 0)
+        return String(format: "%02d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60)
+    }
+
+    static func shareText(_ s: DiarySummary, _ d: DiaryDetail?) -> String {
+        let pts = d?.points ?? []
+        let km = pts.count > 1 ? distanceParts(MyFormat.length(pts)) : ("-", "")
+        return "\(d?.title ?? s.title) · \(date(s.recordDate))\n"
+            + "\(s.steps.formatted())걸음 · \(km.0)\(km.1) · \(hms(s))\n#설로그"
     }
 }
 
@@ -542,64 +652,6 @@ private struct MyDiaryEditSheet: View {
                 self.error = (error as? LocalizedError)?.errorDescription ?? "저장하지 못했어요."
             }
         }
-    }
-}
-
-// MARK: - V-log 카드
-
-private struct MyVlogCard: View {
-    let post: CommunityPost
-    var saved = false
-    var onSave: () -> Void = {}
-
-    var body: some View {
-        Color(Theme.cream)
-            .frame(width: 120, height: 170)
-            .overlay {
-                ZStack {
-                    CachedImage(url: APIClient.shared.absolute(post.thumbnailUrl))
-                    LinearGradient(colors: [.black.opacity(0.25), .clear, .clear, .black.opacity(0.8)],
-                                   startPoint: .top, endPoint: .bottom)
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                Text("SHORTS").font(.system(size: 7, weight: .heavy)).tracking(0.5).foregroundStyle(.white)
-                    .padding(.horizontal, 5).frame(height: 15)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.22)))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.5), lineWidth: 0.8))
-                    .padding(7)
-            }
-            .overlay(alignment: .topTrailing) {
-                Button(action: onSave) {
-                    Image(systemName: saved ? "bookmark.fill" : "bookmark")
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(.black.opacity(0.28)))
-                }
-                .buttonStyle(.plain)
-                .padding(5)
-            }
-            .overlay {
-                if post.media.first?.isVideo == true {
-                    Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(.black.opacity(0.3)))
-                        .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 1.2))
-                }
-            }
-            .overlay(alignment: .bottomLeading) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("@\(post.author.name)").font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
-                    Text(post.title).font(.system(size: 11, weight: .bold)).foregroundStyle(.white).lineLimit(2)
-                    if !post.tags.isEmpty {
-                        Text(post.tags.prefix(2).map { "#\($0)" }.joined(separator: " "))
-                            .font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
-                    }
-                }
-                .padding(8)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
