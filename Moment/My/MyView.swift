@@ -230,7 +230,6 @@ private struct MyDeck: View {
 
     @State private var drag: CGFloat = 0
     @State private var horizontal: Bool?
-    @State private var flying = false
 
     private var window: [Int] {
         guard !list.isEmpty else { return [] }
@@ -267,17 +266,16 @@ private struct MyDeck: View {
     private var swipe: some Gesture {
         DragGesture(minimumDistance: 15)
             .onChanged { v in
-                guard !flying else { return }
                 if horizontal == nil { horizontal = abs(v.translation.width) > abs(v.translation.height) }
                 guard horizontal == true else { return }
                 var w = v.translation.width
                 if (w < 0 && index >= list.count - 1) || (w > 0 && index <= 0) { w *= 0.3 }
-                drag = max(-170, min(170, w))   // 손가락을 따라가되 너무 멀리 안 가게
+                drag = 190 * CGFloat(tanh(Double(w) / 190))   // 손가락을 따라가되 끝으로 갈수록 부드럽게 저항
             }
             .onEnded { v in
                 let wasHorizontal = horizontal == true
                 horizontal = nil
-                guard wasHorizontal, !flying else { return }
+                guard wasHorizontal else { return }
                 let w = v.translation.width, pw = v.predictedEndTranslation.width
                 if (w < -90 || pw < -260), index < list.count - 1 { fly(next: true) }
                 else if (w > 90 || pw > 260), index > 0 { fly(next: false) }
@@ -286,19 +284,15 @@ private struct MyDeck: View {
     }
 
     private func fly(next: Bool) {
-        guard !flying else { return }
         let target = index + (next ? 1 : -1)
-        guard list.indices.contains(target) else { return }
-        flying = true
-        // 멀리 날리지 않고 살짝 밀린 뒤 덱 뒤로 들어가듯 교체 (카드 스택 셔플)
-        withAnimation(.easeOut(duration: 0.16)) {
-            drag = next ? -150 : 150
-        } completion: {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                index = target
-                drag = 0
-            }
-            flying = false
+        guard list.indices.contains(target) else {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { drag = 0 }
+            return
+        }
+        // 한 번의 스프링으로 이어서 움직임: 앞 카드는 지금 위치에서 덱 뒤 자리로, 다음 카드는 앞으로
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
+            index = target
+            drag = 0
         }
     }
 
