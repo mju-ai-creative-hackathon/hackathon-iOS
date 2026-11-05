@@ -159,21 +159,62 @@ struct CourseDetailView: View {
 
     private func routeMap(_ course: CourseDetail) -> some View {
         let stops = course.stops.sorted { $0.seq < $1.seq }
-        return Map(position: $camera) {
-            if stops.count > 1 {
-                MapPolyline(coordinates: stops.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) })
-                    .stroke(Theme.red, lineWidth: 3)
-            }
-            ForEach(stops) { stop in
-                Annotation(stop.name, coordinate: CLLocationCoordinate2D(latitude: stop.lat, longitude: stop.lng)) {
-                    CourseSeqBadge(seq: stop.seq, size: 26)
-                        .overlay(Circle().strokeBorder(.white, lineWidth: 2))
-                        .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+        let coords = stops.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
+        let total = course.legs.reduce(0) { $0 + $1.distanceMeters }
+        return ZStack(alignment: .bottom) {
+            Map(position: $camera) {
+                if coords.count > 1 {
+                    // 바깥 글로우 + 안쪽 실선 + 흰 점선 → 트렌디한 경로선
+                    MapPolyline(coordinates: coords)
+                        .stroke(Theme.red.opacity(0.18), style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round))
+                    MapPolyline(coordinates: coords)
+                        .stroke(Theme.red, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
+                    MapPolyline(coordinates: coords)
+                        .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 6]))
+                }
+                ForEach(stops) { stop in
+                    Annotation("", coordinate: CLLocationCoordinate2D(latitude: stop.lat, longitude: stop.lng), anchor: .center) {
+                        RoutePin(seq: stop.seq, name: stop.name, isStart: stop.seq == stops.first?.seq,
+                                 isEnd: stops.count > 1 && stop.seq == stops.last?.seq)
+                    }
                 }
             }
+            .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+            .mapControlVisibility(.hidden)
+            .saturation(0.75)
+
+            // 아래쪽을 배경색으로 녹이고, 그 위에 요약 칩
+            LinearGradient(colors: [.clear, Theme.bg.opacity(0.85), Theme.bg], startPoint: .top, endPoint: .bottom)
+                .frame(height: 70)
+                .allowsHitTesting(false)
+            HStack(spacing: 8) {
+                routeChip("point.topleft.down.to.point.bottomright.curvepath.fill", "\(stops.count)곳")
+                if total > 0 { routeChip("figure.walk", CourseFormat.distance(total)) }
+                routeChip("clock.fill", CourseFormat.duration(course.totalMinutes))
+                Spacer()
+                Button { withAnimation(.smooth) { resetCamera() } } label: {
+                    Image(systemName: "scope").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
+                        .frame(width: 36, height: 36)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 10)
         }
-        .frame(height: 230)
+        .frame(height: 300)
         .onAppear { resetCamera() }
+    }
+
+    private func routeChip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.red)
+            Text(text).font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.ink)
+        }
+        .padding(.horizontal, 11).frame(height: 30)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.7), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 
     private func resetCamera() {
@@ -189,7 +230,7 @@ struct CourseDetailView: View {
         let minSide = 1500.0   // 한 곳일 때 너무 확대되지 않게
         let w = max(rect.size.width, minSide), h = max(rect.size.height, minSide)
         rect = MKMapRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
-        return rect.insetBy(dx: -w * 0.25, dy: -h * 0.3)
+        return rect.insetBy(dx: -w * 0.32, dy: -h * 0.55)
     }
 
     // MARK: 1안/2안/3안
@@ -630,5 +671,39 @@ private struct CourseStamp: View {
         }
         .frame(width: size + 6, height: size + 6)
         .animation(.spring(duration: 0.3), value: captured)
+    }
+}
+
+/// 경로 위 핀: 좌표 = 번호 원 중심. 이름 캡슐은 출발/도착에만 위로 띄워 겹침 방지
+private struct RoutePin: View {
+    let seq: Int
+    let name: String
+    var isStart = false
+    var isEnd = false
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.red.opacity(0.18)).frame(width: 38, height: 38)
+            Circle().fill(Theme.red).frame(width: 26, height: 26)
+                .overlay(Circle().strokeBorder(.white, lineWidth: 2.5))
+                .shadow(color: Theme.red.opacity(0.45), radius: 6, y: 3)
+            Text("\(seq)").font(.system(size: 12, weight: .heavy)).foregroundStyle(.white)
+        }
+        .overlay(alignment: .top) {
+            if isStart || isEnd {
+                HStack(spacing: 4) {
+                    Text(isStart ? "START" : "FINISH")
+                        .font(.system(size: 8, weight: .heavy)).tracking(0.5).foregroundStyle(.white)
+                        .padding(.horizontal, 5).frame(height: 15)
+                        .background(Capsule().fill(Theme.ink))
+                    Text(name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
+                }
+                .padding(.horizontal, 8).frame(height: 24)
+                .background(Capsule().fill(.white))
+                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                .fixedSize()
+                .offset(y: -28)
+            }
+        }
     }
 }
