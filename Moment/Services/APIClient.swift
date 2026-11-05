@@ -223,9 +223,61 @@ struct CourseDetail: Codable, Identifiable, Hashable {
     let stops: [CourseStop]
     let legs: [CourseLeg]
     let startLeg: CourseLeg?
+    let origin: CourseOrigin?       // 프롬프트에서 뽑은 출발지 (stops 에는 없음)
     let missions: [CourseMission]
     var saved: Bool
 }
+
+struct CourseOrigin: Codable, Hashable { let name: String; let address: String?; let lat: Double; let lng: Double }
+
+// MARK: 나의 기록 · 일정 일기장 DTO (Backend /api/diaries)
+
+struct DiaryPoint: Codable, Hashable {
+    let latitude: Double
+    let longitude: Double
+    let recordedAt: Date
+}
+
+struct DiarySummary: Codable, Identifiable, Hashable {
+    let id: UUID
+    let courseId: Int64?
+    let courseTitle: String?
+    let title: String
+    let recordDate: String          // "YYYY-MM-DD" (Asia/Seoul)
+    let steps: Int
+    let status: String              // ACTIVE | COMPLETED
+    let startedAt: Date
+    let endedAt: Date?
+    let footprintSvg: String?
+}
+
+struct DiaryDetail: Codable, Identifiable, Hashable {
+    let id: UUID
+    let courseId: Int64?
+    let courseTitle: String?
+    let title: String
+    let memo: String?
+    let recordDate: String
+    let steps: Int
+    let status: String
+    let startedAt: Date
+    let endedAt: Date?
+    let points: [DiaryPoint]
+    let footprintSvg: String?
+}
+
+/// 204(No Content) 를 nil 로 받기 위한 래퍼
+protocol EmptyDecodable { static var emptyValue: Self { get } }
+struct MaybeDiary: Decodable, EmptyDecodable {
+    let value: DiaryDetail?
+    static var emptyValue: MaybeDiary { MaybeDiary(value: nil) }
+    init(value: DiaryDetail?) { self.value = value }
+    init(from decoder: Decoder) throws { value = try DiaryDetail(from: decoder) }
+}
+
+struct DiaryStartBody: Encodable { let courseId: Int64; let title: String? }
+struct DiaryCompleteBody: Encodable { let endedAt: Date; let steps: Int; let points: [DiaryPoint] }
+struct DiaryUpdateBody: Encodable { let title: String; let memo: String }
 
 struct CourseSaveResult: Codable { let courseId: Int64; let saved: Bool }
 struct CourseRecommendBody: Encodable { let prompt: String; let lat: Double?; let lng: Double? }
@@ -487,6 +539,52 @@ struct APIClient {
                               rawBody: body, contentType: "application/json", timeout: 90)
     }
 
+    // MARK: 나의 기록 · 일정 일기장 (모두 로그인 필요)
+
+    private static let isoEncoder: JSONEncoder = {
+        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
+    }()
+
+    /// 일정 시작 (진행 중인 일정이 있으면 409)
+    func startDiary(courseId: Int64, title: String?, token: String) async throws -> DiaryDetail {
+        try await send("POST", "/api/diaries", token: token,
+                       rawBody: try Self.isoEncoder.encode(DiaryStartBody(courseId: courseId, title: title)),
+                       contentType: "application/json")
+    }
+
+    /// 진행 중 일정 (없으면 nil)
+    func activeDiary(token: String) async throws -> DiaryDetail? {
+        let r: MaybeDiary = try await send("GET", "/api/diaries/active", token: token, rawBody: nil, contentType: nil)
+        return r.value
+    }
+
+    /// 일정 종료: 이동 경로 + 이번 일정 걸음수 업로드
+    func completeDiary(id: UUID, body: DiaryCompleteBody, token: String) async throws -> DiaryDetail {
+        try await send("POST", "/api/diaries/\(id.uuidString.lowercased())/complete", token: token,
+                       rawBody: try Self.isoEncoder.encode(body), contentType: "application/json", timeout: 60)
+    }
+
+    func diaries(page: Int = 0, size: Int = 20, token: String) async throws -> PageResponse<DiarySummary> {
+        try await send("GET", "/api/diaries",
+                       query: [URLQueryItem(name: "page", value: "\(page)"), URLQueryItem(name: "size", value: "\(size)")],
+                       token: token, body: Optional<LoginBody>.none)
+    }
+
+    func diary(id: UUID, token: String) async throws -> DiaryDetail {
+        try await send("GET", "/api/diaries/\(id.uuidString.lowercased())", token: token, body: Optional<LoginBody>.none)
+    }
+
+    func updateDiary(id: UUID, title: String, memo: String, token: String) async throws -> DiaryDetail {
+        try await send("PATCH", "/api/diaries/\(id.uuidString.lowercased())", token: token,
+                       body: DiaryUpdateBody(title: title, memo: memo))
+    }
+
+    /// 삭제 · 진행 중 일정 취소
+    func deleteDiary(id: UUID, token: String) async throws {
+        let _: EmptyResponse = try await send("DELETE", "/api/diaries/\(id.uuidString.lowercased())", token: token,
+                                              body: Optional<LoginBody>.none)
+    }
+
     private static func location(_ lat: Double?, _ lng: Double?) -> [URLQueryItem] {
         guard let lat, let lng else { return [] }
         return [URLQueryItem(name: "lat", value: String(format: "%.6f", lat)),
@@ -548,6 +646,7 @@ struct APIClient {
                                   fieldErrors: e?.errors ?? [:])
         }
         if data.isEmpty, let empty = EmptyResponse() as? R { return empty }
+        if data.isEmpty, let t = R.self as? EmptyDecodable.Type, let v = t.emptyValue as? R { return v }   // 204
         do { return try decoder.decode(R.self, from: data) } catch { throw APIError.decoding }
     }
 }

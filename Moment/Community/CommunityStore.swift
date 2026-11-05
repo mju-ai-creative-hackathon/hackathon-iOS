@@ -51,7 +51,36 @@ final class CommunityStore {
         await reload()
     }
 
-    func remove(_ id: UUID) { posts.removeAll { $0.id == id } }
+    func remove(_ id: UUID) {
+        posts.removeAll { $0.id == id }
+        myPosts.removeAll { $0.id == id }
+        mineIds = mineIds.filter { $0 != id }
+    }
+
+    // MARK: 내가 만든 V-log — 서버에 /mine 이 없어 올린 게시물 ID 를 단말에 보관 후 상세 조회
+    private(set) var myPosts: [CommunityPost] = []
+    private let mineKey = "community.mine"
+    private var mineIds: [UUID] {
+        get { (UserDefaults.standard.stringArray(forKey: mineKey) ?? []).compactMap(UUID.init(uuidString:)) }
+        set { UserDefaults.standard.set(newValue.map(\.uuidString), forKey: mineKey) }
+    }
+
+    func rememberMine(_ post: CommunityPost) {
+        mineIds = [post.id] + mineIds.filter { $0 != post.id }
+        myPosts.removeAll { $0.id == post.id }
+        myPosts.insert(post, at: 0)
+    }
+
+    func loadMine() async {
+        var result: [CommunityPost] = []
+        var alive: [UUID] = []
+        for id in mineIds {
+            if let p = try? await api.communityPost(id: id) { result.append(p); alive.append(id) }
+            else if let p = myPosts.first(where: { $0.id == id }) { result.append(p); alive.append(id) }   // 일시 오류면 유지
+        }
+        mineIds = alive
+        myPosts = result
+    }
 
     /// 게시물 저장(북마크) — 서버 API 없음, 앱 실행 중에만 유지
     private(set) var saved: Set<UUID> = []

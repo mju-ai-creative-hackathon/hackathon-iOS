@@ -5,7 +5,10 @@ import MapKit
 struct TourView: View {
     @Environment(TourStore.self) private var tour
     @Environment(AuthSession.self) private var auth
+    @Environment(AppStore.self) private var store
+    @Environment(DiaryStore.self) private var diary
     @State private var prompt = ""
+    @State private var savedTrip = false
     @State private var path: [Route] = []
     @State private var needsLogin = false
     @FocusState private var typing: Bool
@@ -16,8 +19,11 @@ struct TourView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
+            VStack(spacing: 0) {
+            header
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if diary.active != nil { activeTrip.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 4) }
                     hero
                     VStack(alignment: .leading, spacing: 0) {
                         regionChips.padding(.top, 14)
@@ -36,6 +42,7 @@ struct TourView: View {
             }
             .scrollDismissesKeyboard(.immediately)
             .refreshable { await tour.loadCourses() }
+            }
             .background(Theme.bg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Route.self) { route in
@@ -57,6 +64,76 @@ struct TourView: View {
             Button("로그인") { auth.logout() }
             Button("취소", role: .cancel) {}
         } message: { Text("AI 맞춤 코스와 코스 저장은 로그인 후 이용할 수 있어요.") }
+        .alert("기록을 저장했어요", isPresented: $savedTrip) {
+            Button("마이에서 보기") { store.selectedTab = .tour }
+            Button("확인", role: .cancel) {}
+        } message: { Text("마이 탭에서 오늘의 발자취를 확인할 수 있어요.") }
+    }
+
+    // MARK: 상단 바 (홈)
+    private var header: some View {
+        HStack(spacing: 18) {
+            BrandLogo(size: 22)
+            Spacer()
+            Button { selectSaved() } label: {
+                Image(systemName: tour.region == TourStore.savedFilter ? "bookmark.fill" : "bookmark")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(tour.region == TourStore.savedFilter ? Theme.red : Theme.ink)
+            }
+            .accessibilityLabel("저장한 코스")
+        }
+        .foregroundStyle(Theme.ink)
+        .padding(.horizontal, 20)
+        .frame(height: 52)
+        .background(Theme.bg)
+    }
+
+    // MARK: 진행 중인 일정
+    private var activeTrip: some View {
+        let a = diary.active!
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Circle().fill(Theme.red).frame(width: 7, height: 7)
+                Text("진행 중인 일정").font(.system(size: 11, weight: .heavy)).tracking(0.6).foregroundStyle(Theme.red)
+            }
+            Text(a.title).font(.system(size: 16, weight: .heavy)).foregroundStyle(Theme.ink).lineLimit(1)
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                let sec = max(0, Int(ctx.date.timeIntervalSince(a.startedAt)))
+                let elapsed = sec >= 3600
+                    ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                    : String(format: "%02d:%02d", sec / 60, sec % 60)
+                Text("\(diary.steps)걸음 · \(CourseFormat.distance(Int(diary.distanceMeters))) · ≈\(diary.kcal)kcal · \(elapsed) 경과")
+                    .font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(Theme.gray)
+            }
+            if let e = diary.tripError {
+                Text(e).font(.system(size: 12)).foregroundStyle(Theme.red)
+            }
+            HStack(spacing: 8) {
+                if let cid = a.courseId {
+                    Button { path.append(.course(cid)) } label: {
+                        Text("코스 보기").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
+                            .frame(maxWidth: .infinity).frame(height: 40)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+                    }
+                }
+                Button {
+                    Task { if await diary.finish() != nil { savedTrip = true } }
+                } label: {
+                    Group {
+                        if diary.isBusy { ProgressView().tint(.white) }
+                        else { Text("종료").font(.system(size: 14, weight: .bold)).foregroundStyle(.white) }
+                    }
+                    .frame(maxWidth: .infinity).frame(height: 40)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.red))
+                }
+                .disabled(diary.isBusy)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.blueSoft))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.red, lineWidth: 1))
     }
 
     // MARK: 상단 (흐린 서울 지도 + 제목)
@@ -76,15 +153,6 @@ struct TourView: View {
                 Text("코스를 따라 촬영 미션을 모으면 숏폼이 완성돼요").font(.system(size: 13)).foregroundStyle(Theme.gray)
             }
             .padding(.horizontal, 16)
-        }
-        .overlay(alignment: .topTrailing) {
-            Button { selectSaved() } label: {
-                Image(systemName: tour.region == TourStore.savedFilter ? "bookmark.fill" : "bookmark")
-                    .font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(.white.opacity(0.9)))
-            }
-            .padding(.trailing, 16).padding(.top, 6)
         }
     }
 

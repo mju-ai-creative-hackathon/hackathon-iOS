@@ -4,6 +4,7 @@ import PhotosUI
 /// 만들기 탭 (와이어프레임 '만들기' 1·2·완성)
 /// STEP 01 사진 선택 → STEP 02 스타일(무드·음악) → 완성(AI 생성 → 미리보기 → 공유)
 struct CreateView: View {
+    @Environment(CommunityStore.self) private var community
     enum Step: Int { case photos = 1, style, done }
 
     @Environment(AppStore.self) private var store
@@ -489,9 +490,10 @@ struct CreateView: View {
                 var tags = ["서울", req.style.rawValue, req.mood.rawValue]
                 if case .tour = req.source { tags.insert("도장깨기", at: 1) }
                 let body = CommunityCreateBody(title: title, caption: nil, tags: tags)
-                _ = try await auth.authorized {
+                let post = try await auth.authorized {
                     try await APIClient.shared.createCommunityPost(body, video: video, cover: cover, token: $0)
                 }
+                community.rememberMine(post)
                 withAnimation { shared = true }
             } catch {
                 shareError = (error as? LocalizedError)?.errorDescription ?? "공유하지 못했어요. 다시 시도해 주세요."

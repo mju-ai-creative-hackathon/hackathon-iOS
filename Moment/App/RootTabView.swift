@@ -8,10 +8,10 @@ struct RootTabView: View {
         VStack(spacing: 0) {
             ZStack {
                 switch store.selectedTab {
-                case .home: HomeView()
+                case .home: TourView()          // 탐색하기가 홈
                 case .create: CreateView()
                 case .reels: CommunityView()
-                case .tour: TourView()
+                case .tour: MyView()            // 마이 (나만의 기록)
                 case .more: MoreView()
                 }
             }
@@ -29,7 +29,7 @@ struct RootTabView: View {
         case .home: ("house", "house.fill", "홈")
         case .create: ("camera", "camera.fill", "만들기")
         case .reels: ("bubble.left", "bubble.left.fill", "커뮤니티")
-        case .tour: ("mappin.and.ellipse", "mappin.and.ellipse", "탐색하기")
+        case .tour: ("face.smiling", "face.smiling.inverse", "마이")
         case .more: ("line.3.horizontal", "line.3.horizontal", "더보기")
         }
     }

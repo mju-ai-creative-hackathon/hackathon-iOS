@@ -8,6 +8,7 @@ struct CourseDetailView: View {
     @Environment(TourStore.self) private var tour
     @Environment(AppStore.self) private var store
     @Environment(AuthSession.self) private var auth
+    @Environment(DiaryStore.self) private var diary
 
     private let courseId: Int64?
     @State private var options: [CourseDetail]
@@ -26,6 +27,11 @@ struct CourseDetailView: View {
     @State private var saving = false
     @State private var showLogin = false
     @State private var saveError: String?
+
+    // 일정 기록
+    @State private var tripSaved = false
+    @State private var confirmCancel = false
+    @State private var otherTripInfo = false
 
     // 미션 촬영
     @State private var cameraMission: CourseMission?
@@ -80,13 +86,14 @@ struct CourseDetailView: View {
             Button("로그인") { auth.logout() }
             Button("취소", role: .cancel) {}
         } message: {
-            Text("코스를 저장하려면 로그인해 주세요.")
+            Text("코스를 저장하거나 시작하려면 로그인해 주세요.")
         }
         .alert("저장하지 못했어요", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("확인", role: .cancel) {}
         } message: {
             Text(saveError ?? "")
         }
+        .modifier(TripAlerts(diary: diary, store: store, tripSaved: $tripSaved, confirmCancel: $confirmCancel, otherTripInfo: $otherTripInfo))
         .fullScreenCover(item: $cameraMission) { mission in
             CameraPicker(video: mission.isVideo, maxDuration: Double(mission.durationSec ?? 15)) { media in
                 tour.captures[mission.id] = media
@@ -223,6 +230,10 @@ struct CourseDetailView: View {
         return VStack(spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
                 Map(position: $camera) {
+                    if let origin = course.origin, let first = stops.first {
+                        MapPolyline(coordinates: [origin.coordinate, first.coordinate])
+                            .stroke(Theme.gray, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round, dash: [4, 5]))
+                    }
                     ForEach(Array(zip(stops, stops.dropFirst())), id: \.0.seq) { a, b in
                         MapPolyline(coordinates: walkRoutes["\(course.id)-\(a.seq)"] ?? [a.coordinate, b.coordinate])
                             .stroke(Theme.red, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [6, 6]))
@@ -233,6 +244,11 @@ struct CourseDetailView: View {
                                 StopDot(seq: stop.seq, on: stop.seq == focus?.seq)
                             }
                             .buttonStyle(.plain)
+                        }
+                    }
+                    if let origin = course.origin {
+                        Annotation("", coordinate: origin.coordinate, anchor: .center) {
+                            OriginPin(name: origin.name)
                         }
                     }
                     if let focus {
@@ -316,11 +332,12 @@ struct CourseDetailView: View {
     private func resetCamera() {
         guard let course else { return }
         focusSeq = course.stops.map(\.seq).min() ?? 1
-        camera = .rect(Self.fitRect(course.stops))
+        camera = .rect(Self.fitRect(course.stops, origin: course.origin))
     }
 
-    private static func fitRect(_ stops: [CourseStop]) -> MKMapRect {
+    private static func fitRect(_ stops: [CourseStop], origin: CourseOrigin? = nil) -> MKMapRect {
         let points = stops.map { MKMapPoint(CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng)) }
+            + (origin.map { [MKMapPoint($0.coordinate)] } ?? [])
         guard let first = points.first else { return .world }
         var rect = MKMapRect(origin: first, size: MKMapSize(width: 0, height: 0))
         for p in points.dropFirst() { rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0))) }
@@ -434,7 +451,7 @@ struct CourseDetailView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 if let start = course.startLeg {
-                    CourseLegRow(leg: start, title: "내 위치 → \(start.toName ?? stops.first?.name ?? "")") { openLeg(start) }
+                    CourseLegRow(leg: start, title: "\(startName(start, course)) → \(start.toName ?? stops.first?.name ?? "")") { openLeg(start) }
                 }
                 ForEach(Array(stops.enumerated()), id: \.element.id) { i, stop in
                     if multi && (i == 0 || stops[i - 1].dayNo != stop.dayNo) {
@@ -504,7 +521,10 @@ struct CourseDetailView: View {
 
     private func bottomBar(_ course: CourseDetail) -> some View {
         let saved = isSaved(course)
-        return HStack(spacing: 10) {
+        let trackingThis = diary.active?.courseId == course.id
+        return VStack(spacing: 8) {
+            if trackingThis, let a = diary.active { tripStats(a.startedAt) }
+            HStack(spacing: 10) {
             Button { toggleSave(course) } label: {
                 HStack(spacing: 5) {
                     Image(systemName: saved ? "bookmark.fill" : "bookmark")
@@ -521,21 +541,87 @@ struct CourseDetailView: View {
             Button {
                 if let leg = course.startLeg ?? course.legs.first { openLeg(leg) }
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "map.fill")
-                    Text("지도에서 보기")
-                }
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity).frame(height: 50)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
+                Image(systemName: "map.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.red)
+                    .frame(width: 50, height: 50)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.red.opacity(0.5), lineWidth: 1))
+            }
+            .accessibilityLabel("지도에서 보기")
+
+            tripButton(course)
             }
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
         .background(Theme.bg.overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) })
     }
 
+    private func tripStats(_ startedAt: Date) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(Theme.red).frame(width: 7, height: 7)
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                let km = String(format: "%.2fkm", diary.distanceMeters / 1000)
+                Text("\(diary.steps) 걸음 · \(km) · ≈\(diary.kcal)kcal · 경과 \(Self.elapsed(from: startedAt, to: ctx.date))")
+                    .font(.system(size: 13, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(Theme.ink).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            Spacer(minLength: 4)
+            Button("취소") { confirmCancel = true }
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.gray)
+                .disabled(diary.isBusy)
+        }
+        .padding(.horizontal, 12).frame(height: 34)
+        .background(Capsule().fill(Theme.blueSoft))
+    }
+
+    @ViewBuilder
+    private func tripButton(_ course: CourseDetail) -> some View {
+        let active = diary.active
+        if active == nil || active?.courseId == course.id {
+            let tracking = active != nil
+            Button {
+                guard auth.user != nil else { showLogin = true; return }
+                Task {
+                    if tracking {
+                        if await diary.finish() != nil { tripSaved = true }
+                    } else {
+                        await diary.start(courseId: course.id, title: nil)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if diary.isBusy {
+                        ProgressView().tint(.white)
+                    } else {
+                        Image(systemName: tracking ? "stop.circle.fill" : "figure.walk")
+                        Text(tracking ? "기록 종료하기" : "코스 시작하기")
+                    }
+                }
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity).frame(height: 50)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
+            }
+            .disabled(diary.isBusy)
+        } else {
+            Button { otherTripInfo = true } label: {
+                Text("다른 코스 일정 진행 중")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Theme.gray)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity).frame(height: 50)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.line))
+            }
+        }
+    }
+
     // MARK: 동작
+
+    private func startName(_ leg: CourseLeg, _ course: CourseDetail) -> String {
+        if let n = leg.fromName, !n.isEmpty { return n }
+        return course.origin?.name ?? "내 위치"
+    }
 
     private func isSaved(_ course: CourseDetail) -> Bool { savedOverride[course.id] ?? course.saved }
 
@@ -581,12 +667,54 @@ struct CourseDetailView: View {
         return "₩" + (f.string(from: NSNumber(value: won)) ?? "\(won)")
     }
 
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let sec = max(0, Int(now.timeIntervalSince(start)))
+        let h = sec / 3600, m = (sec % 3600) / 60, s = sec % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+
     static func distance(_ meters: Int) -> String {
         meters < 1000 ? "\(meters)m" : String(format: "%.1fkm", Double(meters) / 1000)
     }
 }
 
 // MARK: - 하위 뷰
+
+/// 일정 기록 관련 알림 (body 타입 체크 부담을 덜려고 분리)
+private struct TripAlerts: ViewModifier {
+    let diary: DiaryStore
+    let store: AppStore
+    @Binding var tripSaved: Bool
+    @Binding var confirmCancel: Bool
+    @Binding var otherTripInfo: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .alert("기록을 저장했어요", isPresented: $tripSaved) {
+                Button("마이에서 보기") { store.selectedTab = .tour }
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text("오늘의 걸음과 발자취를 마이 탭에서 볼 수 있어요.")
+            }
+            .alert("기록을 취소할까요?", isPresented: $confirmCancel) {
+                Button("기록 취소", role: .destructive) { Task { await diary.cancel() } }
+                Button("계속 기록", role: .cancel) {}
+            } message: {
+                Text("지금까지 모은 걸음수와 경로가 저장되지 않아요.")
+            }
+            .alert("다른 코스 일정 진행 중", isPresented: $otherTripInfo) {
+                Button("마이에서 보기") { store.selectedTab = .tour }
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text("\(diary.active?.courseTitle ?? "다른 코스") 일정을 기록하고 있어요. 마이 탭에서 먼저 종료해 주세요.")
+            }
+            .alert("일정 기록", isPresented: Binding(get: { diary.tripError != nil }, set: { if !$0 { diary.tripError = nil } })) {
+                Button("확인", role: .cancel) {}
+            } message: {
+                Text(diary.tripError ?? "")
+            }
+    }
+}
 
 private extension View {
     func courseCardStyle() -> some View {
@@ -797,6 +925,32 @@ private struct CourseStamp: View {
 
 extension CourseStop {
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+}
+
+extension CourseOrigin {
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+}
+
+/// 출발지 핀 (진한 원 + '출발' 라벨)
+private struct OriginPin: View {
+    let name: String
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 3) {
+                Image(systemName: "flag.fill").font(.system(size: 8, weight: .bold))
+                Text("출발").font(.system(size: 10, weight: .heavy))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7).frame(height: 18)
+            .background(Capsule().fill(Theme.ink))
+            Circle().fill(Theme.ink).frame(width: 12, height: 12)
+                .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+        }
+        .offset(y: -12)
+        .accessibilityLabel("출발지 \(name)")
+        .allowsHitTesting(false)
+    }
 }
 
 /// 작은 번호 점 (선택되면 빨강 채움)
