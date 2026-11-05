@@ -116,7 +116,8 @@ struct MoreView: View {
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
             .navigationTitle("더보기")
-            .confirmationDialog("정말 탈퇴할까요?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            // confirmationDialog 는 iOS 26 에서 팝오버로 떠 엉뚱한 위치를 가리키고 취소 버튼이 숨음 → alert 사용
+            .alert("정말 탈퇴할까요?", isPresented: $confirmDelete) {
                 Button("탈퇴하기", role: .destructive) { deleteAccount() }
                 Button("취소", role: .cancel) {}
             } message: {
