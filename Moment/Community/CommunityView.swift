@@ -6,6 +6,11 @@ struct CommunityView: View {
     @Environment(CommunityStore.self) private var community
     @Environment(AppStore.self) private var store
     @State private var selected: CommunityPost?
+    // 화면에서 재생되는 영상은 딱 하나: 누른 영상(pinned)이 보이는 동안 우선, 아니면 화면 가운데에 가장 가까운 영상
+    @State private var frames: [UUID: CGRect] = [:]
+    @State private var viewport: CGSize = .zero
+    @State private var pinned: UUID?
+    @State private var playing: UUID?
     @FocusState private var searching: Bool
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
@@ -19,12 +24,24 @@ struct CommunityView: View {
                 LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(community.posts) { post in
                         GridCell(post: post, saved: community.saved.contains(post.id),
-                                 onSave: { community.toggleSaved(post.id) }, onTap: { selected = post })
+                                 isPlaying: selected == nil && playing == post.id,
+                                 onSave: { community.toggleSaved(post.id) }, onTap: { selected = post },
+                                 onPress: { pinned = post.id; updatePlaying() })
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: CellFrameKey.self, value: [post.id: g.frame(in: .named("grid"))])
+                            })
                             .task { await community.loadMoreIfNeeded(current: post) }
                     }
                 }
                 .padding(.horizontal, 16)
                 footer
+            }
+            .coordinateSpace(name: "grid")
+            .background(GeometryReader { g in Color.clear.onAppear { viewport = g.size }.onChange(of: g.size) { _, v in viewport = v } })
+            .onPreferenceChange(CellFrameKey.self) { f in frames = f; updatePlaying() }
+            .onChange(of: community.posts.map(\.id)) { _, ids in
+                if let p = pinned, !ids.contains(p) { pinned = nil }
+                updatePlaying()
             }
             .scrollDismissesKeyboard(.immediately)
             .refreshable { await community.reload() }
@@ -38,6 +55,25 @@ struct CommunityView: View {
             }
             .presentationDragIndicator(.visible)
         }
+    }
+
+    private func updatePlaying() {
+        let view = CGRect(origin: .zero, size: viewport)
+        let videoIds = Set(community.posts.filter { $0.media.first?.isVideo == true }.map(\.id))
+        // 절반 이상 보이는 셀만 후보
+        let visible = frames.filter { id, r in
+            videoIds.contains(id) && r.intersection(view).height >= r.height * 0.5
+        }
+        if let p = pinned, visible[p] != nil {
+            if playing != p { playing = p }
+            return
+        }
+        if pinned != nil, visible[pinned!] == nil { pinned = nil }
+        let center = CGPoint(x: view.midX, y: view.height * 0.42)
+        let best = visible.min { a, b in
+            hypot(a.value.midX - center.x, a.value.midY - center.y) < hypot(b.value.midX - center.x, b.value.midY - center.y)
+        }?.key
+        if playing != best { playing = best }
     }
 
     private var header: some View {
@@ -128,14 +164,22 @@ struct CommunityView: View {
 
 // MARK: - 그리드 셀
 
+private struct CellFrameKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
 private struct GridCell: View {
     let post: CommunityPost
     var saved = false
+    var isPlaying = false
     var onSave: () -> Void = {}
     var onTap: () -> Void = {}
-    @State private var holding = false
-    @State private var pressTask: Task<Void, Never>?
+    var onPress: () -> Void = {}
     @State private var player: LoopingPlayer?
+    @State private var ready = false
 
     var body: some View {
         Color(Theme.cream)
@@ -150,7 +194,7 @@ private struct GridCell: View {
                         }
                     }
                     // 누르고 있는 동안 썸네일 자리에서 영상 재생
-                    if holding, let player {
+                    if isPlaying, ready, let player {
                         PlayerLayerView(player: player.player).allowsHitTesting(false).transition(.opacity)
                     }
                     LinearGradient(colors: [.black.opacity(0.25), .clear, .clear, .black.opacity(0.8)],
@@ -175,7 +219,7 @@ private struct GridCell: View {
                 .padding(8)
             }
             .overlay {
-                if !holding, post.media.first?.isVideo == true {
+                if !(isPlaying && ready), post.media.first?.isVideo == true {
                     Image(systemName: "play.fill").font(.system(size: 13)).foregroundStyle(.white)
                         .frame(width: 38, height: 38)
                         .background(Circle().fill(.black.opacity(0.3)))
@@ -196,35 +240,31 @@ private struct GridCell: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            // 탭 → 상세, 누르고 있기 → 그 자리 재생. onTapGesture 를 먼저 둬야 ScrollView 스크롤이 막히지 않는다
+            // 탭 → 상세, 길게 누르기 → 이 영상을 재생(스크롤해도 화면에 있는 동안 유지). onTapGesture 를 먼저 둬야 스크롤이 안 막힘
             .onTapGesture(perform: onTap)
-            .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 12, perform: {}) { pressing in
-                pressTask?.cancel()
-                if pressing {
-                    pressTask = Task {
-                        try? await Task.sleep(for: .milliseconds(220))
-                        guard !Task.isCancelled else { return }
-                        holding = true
-                    }
-                } else {
-                    holding = false
-                }
-            }
-            .onChange(of: holding) { _, h in h ? startPreview() : stopPreview() }
-            .sensoryFeedback(.impact(weight: .light), trigger: holding) { _, new in new }
-            .animation(.easeOut(duration: 0.15), value: holding)
+            .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 12, perform: onPress)
+            .sensoryFeedback(.impact(weight: .light), trigger: isPlaying) { _, new in new }
+            .animation(.easeOut(duration: 0.2), value: isPlaying && ready)
+            .onAppear { if isPlaying { startPreview() } }
+            .onChange(of: isPlaying) { _, on in on ? startPreview() : stopPreview() }
             .onDisappear(perform: stopPreview)
     }
 
     private func startPreview() {
         guard let m = post.media.first(where: \.isVideo), let url = APIClient.shared.absolute(m.url) else { return }
         let p = player ?? LoopingPlayer(url: url)
-        p.player.seek(to: .zero)
-        p.play()
         player = p
+        p.play()
+        // 첫 프레임이 준비되면 썸네일 위로 덮기 (검은 화면 깜빡임 방지)
+        Task {
+            for _ in 0..<50 {
+                if p.player.currentItem?.status == .readyToPlay { ready = true; return }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
-    private func stopPreview() { player?.pause() }
+    private func stopPreview() { player?.pause(); ready = false }
 }
 
 // MARK: - 상세
