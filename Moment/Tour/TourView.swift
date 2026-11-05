@@ -342,7 +342,8 @@ private struct CourseRow: View {
 
 // MARK: - AI 추천 로딩 (30~40초)
 
-private struct RecommendingOverlay: View {
+struct RecommendingOverlay: View {
+    var title = "AI가 맞춤 코스를 짜고 있어요"
     @State private var tick = 0
     private let lines = ["요청을 읽고 있어요", "서울 곳곳의 장소를 찾는 중", "동선과 이동 시간을 맞추는 중",
                          "장소마다 촬영 미션을 만드는 중", "거의 다 됐어요"]
@@ -361,7 +362,7 @@ private struct RecommendingOverlay: View {
                     Image(systemName: "map.fill").font(.system(size: 26)).foregroundStyle(Theme.red)
                         .symbolEffect(.pulse)
                 }
-                Text("AI가 맞춤 코스를 짜고 있어요").font(.system(size: 19, weight: .heavy)).foregroundStyle(Theme.ink)
+                Text(title).font(.system(size: 19, weight: .heavy)).foregroundStyle(Theme.ink)
                 Text(lines[min(lines.count - 1, tick / 8)] + "…")
                     .font(.system(size: 14)).foregroundStyle(Theme.gray)
                     .contentTransition(.opacity).animation(.easeInOut, value: tick / 8)

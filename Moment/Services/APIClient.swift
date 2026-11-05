@@ -480,6 +480,13 @@ struct APIClient {
         return r.courses
     }
 
+    /// 기존 코스(기본/내 AI)를 프롬프트대로 고친 새 AI 코스 1개. 원본은 그대로
+    func refineCourse(id: Int64, prompt: String, lat: Double?, lng: Double?, token: String) async throws -> CourseDetail {
+        let body = try JSONEncoder().encode(CourseRecommendBody(prompt: prompt, lat: lat, lng: lng))
+        return try await send("POST", "/api/courses/\(id)/refinements", token: token,
+                              rawBody: body, contentType: "application/json", timeout: 90)
+    }
+
     private static func location(_ lat: Double?, _ lng: Double?) -> [URLQueryItem] {
         guard let lat, let lng else { return [] }
         return [URLQueryItem(name: "lat", value: String(format: "%.6f", lat)),

@@ -19,6 +19,9 @@ struct CourseDetailView: View {
     @State private var focusSeq = 1                         // 지도에서 사진으로 보여줄 장소
     @State private var walkRoutes: [String: [CLLocationCoordinate2D]] = [:]   // "코스id-from" → 실제 도보 경로
     @State private var mapExpanded = false
+    @State private var refinePrompt = ""
+    @State private var refineError: String?
+    @FocusState private var refineFocused: Bool
     @State private var savedOverride: [Int64: Bool] = [:]
     @State private var saving = false
     @State private var showLogin = false
@@ -69,6 +72,10 @@ struct CourseDetailView: View {
             }
         }
         .task { await loadIfNeeded() }
+        .overlay { if tour.isRefining { RecommendingOverlay(title: "AI가 코스를 고치고 있어요") } }
+        .alert("코스를 고치지 못했어요", isPresented: Binding(get: { refineError != nil }, set: { if !$0 { refineError = nil } })) {
+            Button("확인", role: .cancel) {}
+        } message: { Text(refineError ?? "") }
         .alert("로그인이 필요해요", isPresented: $showLogin) {
             Button("로그인") { auth.logout() }
             Button("취소", role: .cancel) {}
@@ -147,6 +154,7 @@ struct CourseDetailView: View {
                     if options.count > 1 { optionCards }
                     courseCard(course)
                     schedule(course)
+                    refineBar(course)
                     if !course.missions.isEmpty { missions(course) }
                 }
                 .padding(.horizontal, 16)
@@ -155,6 +163,53 @@ struct CourseDetailView: View {
         }
         .defaultScrollAnchor(.top)
         bottomBar(course)
+        }
+    }
+
+    // MARK: 코스 수정 요청 (POST /api/courses/{id}/refinements → 새 AI 코스, 원본 유지)
+
+    private func refineBar(_ course: CourseDetail) -> some View {
+        let empty = refinePrompt.trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles").foregroundStyle(Theme.red)
+                TextField("이 코스를 이렇게 바꿔줘 (예: 카페 하나 넣어줘)", text: $refinePrompt, axis: .vertical)
+                    .lineLimit(1...3).font(.system(size: 14))
+                    .focused($refineFocused)
+                    .submitLabel(.send)
+                    .onSubmit { refine(course) }
+                Button { refine(course) } label: {
+                    Text("수정").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 14).frame(height: 34)
+                        .background(Capsule().fill(empty ? Theme.line : Theme.red))
+                }
+                .disabled(empty || tour.isRefining)
+            }
+            .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.red.opacity(0.3), lineWidth: 1))
+            Text("원래 코스는 그대로 두고, 고친 코스를 새 안으로 추가해요")
+                .font(.system(size: 11)).foregroundStyle(Theme.gray).padding(.leading, 4)
+        }
+    }
+
+    private func refine(_ course: CourseDetail) {
+        refineFocused = false
+        guard auth.user != nil else { showLogin = true; return }
+        let text = refinePrompt
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty, !tour.isRefining else { return }
+        Task {
+            do {
+                let new = try await tour.refine(course.id, prompt: text)
+                refinePrompt = ""
+                withAnimation(.snappy) {
+                    options.append(new)
+                    selected = options.count - 1
+                }
+                resetCamera()
+            } catch {
+                refineError = (error as? LocalizedError)?.errorDescription ?? "잠시 후 다시 시도해 주세요."
+            }
         }
     }
 
