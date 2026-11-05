@@ -316,12 +316,10 @@ private struct MyDeckPlacement: ViewModifier {
                 .fill(Color.black.opacity(front ? 0 : 0.035 * Double(min(a, 2)))).allowsHitTesting(false))
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(Theme.line, lineWidth: front ? 0 : 1).allowsHitTesting(false))
-            .brightness(-0.04 * Double(a))
             .opacity(a > 2.2 ? 0 : 1 - 0.1 * Double(a))
             .scaleEffect(1 - 0.06 * a, anchor: pos >= 0 ? .trailing : .leading)
             .rotationEffect(.degrees(Double(3.5 * pos) + spin), anchor: .bottom)
             .rotation3DEffect(.degrees(tilt), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            .shadow(color: .black.opacity(front ? 0.08 : 0.12), radius: front ? 14 : 8, x: 0, y: 4)
             .offset(x: x + (front ? drag : 0))
     }
 }
@@ -379,8 +377,9 @@ private struct MyDeckCard: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white))
-        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+        // 그림자는 배경 도형에만 (콘텐츠 전체 그림자는 슬라이드마다 다시 계산돼 무거움)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.white)
+            .shadow(color: .black.opacity(0.08), radius: 14, y: 6))
         .task(id: summary.id) {
             await diary.detail(summary.id)
             loaded = true
@@ -481,39 +480,68 @@ private struct MyDeckRouteMap: View {
                                    longitudeDelta: max((maxLng - minLng) * 1.6, 0.004)))
     }
 
+    // 카드 슬라이드 중 라이브 Map 은 무거워서 버벅임 → 정적 스냅샷 이미지로 그린다 (캐시)
+    @State private var image: UIImage?
+
     var body: some View {
-        let c = coords
-        Map(initialPosition: .region(region), interactionModes: []) {
-            if c.count > 1 {
-                MapPolyline(coordinates: c)
-                    .stroke(Theme.red, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+        GeometryReader { g in
+            ZStack {
+                Theme.cream
+                if let image { Image(uiImage: image).resizable().scaledToFill().transition(.opacity) }
             }
-            ForEach(mids, id: \.self) { i in
-                Annotation("", coordinate: c[i]) {
-                    Circle().fill(.white).frame(width: 8, height: 8)
-                        .overlay(Circle().strokeBorder(Theme.red, lineWidth: 1.5))
-                }
-            }
-            if let s = c.first {
-                Annotation("", coordinate: s) {
-                    Circle().fill(Color.green).frame(width: 22, height: 22)
-                        .overlay(Image(systemName: "play.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(.white))
-                        .overlay(Circle().strokeBorder(.white, lineWidth: 2))
-                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                }
-            }
-            if c.count > 1, let e = c.last {
-                Annotation("", coordinate: e, anchor: .bottom) {
-                    Image(systemName: "mappin.circle.fill")
-                        .font(.system(size: 26))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Theme.red)
-                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+            .task(id: "\(points.count)-\(Int(g.size.width))x\(Int(g.size.height))") {
+                guard g.size.width > 1 else { return }
+                let key = "\(points.first?.recordedAt.timeIntervalSince1970 ?? 0)-\(points.count)-\(Int(g.size.width))x\(Int(g.size.height))" as NSString
+                if let hit = MyDeckRouteMap.cache.object(forKey: key) { image = hit; return }
+                if let img = await render(size: g.size) {
+                    MyDeckRouteMap.cache.setObject(img, forKey: key)
+                    withAnimation(.easeOut(duration: 0.2)) { image = img }
                 }
             }
         }
-        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
         .allowsHitTesting(false)
+    }
+
+    private static let cache = NSCache<NSString, UIImage>()
+
+    private func render(size: CGSize) async -> UIImage? {
+        let opts = MKMapSnapshotter.Options()
+        opts.region = region
+        opts.size = size
+        opts.scale = UIScreen.main.scale
+        opts.pointOfInterestFilter = .excludingAll
+        opts.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+        guard let snap = try? await MKMapSnapshotter(options: opts).start() else { return nil }
+        let c = coords, mids = mids
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = opts.scale
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { ctx in
+            snap.image.draw(at: .zero)
+            let cg = ctx.cgContext
+            let pts = c.map { snap.point(for: $0) }
+            if pts.count > 1 {
+                cg.setStrokeColor(UIColor(Theme.red).cgColor)
+                cg.setLineWidth(4); cg.setLineCap(.round); cg.setLineJoin(.round)
+                cg.addLines(between: pts); cg.strokePath()
+            }
+            for i in mids {
+                let r = CGRect(x: pts[i].x - 4, y: pts[i].y - 4, width: 8, height: 8)
+                cg.setFillColor(UIColor.white.cgColor); cg.fillEllipse(in: r)
+                cg.setStrokeColor(UIColor(Theme.red).cgColor); cg.setLineWidth(1.5); cg.strokeEllipse(in: r)
+            }
+            if let s0 = pts.first {
+                let r = CGRect(x: s0.x - 11, y: s0.y - 11, width: 22, height: 22)
+                cg.setFillColor(UIColor.white.cgColor); cg.fillEllipse(in: r.insetBy(dx: -2, dy: -2))
+                cg.setFillColor(UIColor.systemGreen.cgColor); cg.fillEllipse(in: r)
+                let play = UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .bold))?
+                    .withTintColor(.white, renderingMode: .alwaysOriginal)
+                play?.draw(in: CGRect(x: s0.x - 4, y: s0.y - 5, width: 9, height: 10))
+            }
+            if pts.count > 1, let e = pts.last {
+                let pin = UIImage(systemName: "mappin.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 26))?
+                    .applyingSymbolConfiguration(.init(paletteColors: [.white, UIColor(Theme.red)]))
+                pin?.draw(in: CGRect(x: e.x - 13, y: e.y - 26, width: 26, height: 26))
+            }
+        }
     }
 }
 
