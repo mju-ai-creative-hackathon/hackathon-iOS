@@ -179,9 +179,11 @@ struct CourseStop: Codable, Hashable, Identifiable {
     let lat: Double
     let lng: Double
     let imageUrl: String?
-    let startTime: String?
+    let startTime: String?          // 그날의 "HH:mm"
     let stayMinutes: Int
+    let day: Int?                   // 여행 일차(1부터). 없으면 1일차
     var id: Int { seq }
+    var dayNo: Int { max(1, day ?? 1) }
 }
 
 struct CourseLeg: Codable, Hashable {

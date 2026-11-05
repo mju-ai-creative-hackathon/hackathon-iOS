@@ -367,17 +367,28 @@ struct CourseDetailView: View {
 
     private func schedule(_ course: CourseDetail) -> some View {
         let stops = course.stops.sorted { $0.seq < $1.seq }
+        let dayCount = Set(stops.map(\.dayNo)).count
+        let multi = dayCount > 1
         return VStack(alignment: .leading, spacing: 10) {
-            Text("오늘의 일정").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
+            HStack(alignment: .firstTextBaseline) {
+                Text(multi ? "여행 일정" : "오늘의 일정").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
+                Spacer()
+                if multi {
+                    Text("\(dayCount)일 코스").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.red)
+                }
+            }
             VStack(alignment: .leading, spacing: 0) {
                 if let start = course.startLeg {
                     CourseLegRow(leg: start, title: "내 위치 → \(start.toName ?? stops.first?.name ?? "")") { openLeg(start) }
                 }
                 ForEach(Array(stops.enumerated()), id: \.element.id) { i, stop in
+                    if multi && (i == 0 || stops[i - 1].dayNo != stop.dayNo) {
+                        CourseDayHeader(day: stop.dayNo, startTime: stop.startTime, first: i == 0 && course.startLeg == nil)
+                    }
                     CourseStopRow(stop: stop)
                     if i + 1 < stops.count,
                        let leg = course.legs.first(where: { $0.fromSeq == stop.seq && $0.toSeq == stops[i + 1].seq }) {
-                        CourseLegRow(leg: leg, title: nil) { openLeg(leg) }
+                        CourseLegRow(leg: leg, title: nil, nextDay: stops[i + 1].dayNo != stop.dayNo) { openLeg(leg) }
                     }
                 }
             }
@@ -390,7 +401,8 @@ struct CourseDetailView: View {
 
     private func missions(_ course: CourseDetail) -> some View {
         let done = course.missions.filter { tour.captures[$0.id] != nil }.count
-        let names = Dictionary(course.stops.map { ($0.seq, $0.name) }, uniquingKeysWith: { a, _ in a })
+        let stopsBySeq = Dictionary(course.stops.map { ($0.seq, $0) }, uniquingKeysWith: { a, _ in a })
+        let groups = Dictionary(grouping: course.missions, by: \.stopSeq).sorted { $0.key < $1.key }
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("K-MISSION").font(.system(size: 10, weight: .heavy)).tracking(0.5)
@@ -411,13 +423,27 @@ struct CourseDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
 
-            ForEach(Array(course.missions.enumerated()), id: \.element.id) { i, mission in
-                CourseMissionCard(
-                    index: i + 1, mission: mission, stopName: names[mission.stopSeq] ?? "",
-                    capture: tour.captures[mission.id],
-                    onCamera: { cameraMission = mission },
-                    onAlbum: { albumMission = mission; albumOpen = true }
-                )
+            ForEach(groups, id: \.key) { seq, list in
+                let stopDone = list.filter { tour.captures[$0.id] != nil }.count
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        CourseSeqBadge(seq: seq, size: 20)
+                        Text(stopsBySeq[seq]?.name ?? "\(seq)번째 장소")
+                            .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("\(stopDone)/\(list.count)").font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(stopDone == list.count ? Theme.red : Theme.gray)
+                    }
+                    .padding(.top, 6)
+                    ForEach(Array(list.enumerated()), id: \.element.id) { j, mission in
+                        CourseMissionCard(
+                            label: "\(seq)-\(j + 1)", mission: mission,
+                            capture: tour.captures[mission.id],
+                            onCamera: { cameraMission = mission },
+                            onAlbum: { albumMission = mission; albumOpen = true }
+                        )
+                    }
+                }
             }
         }
     }
@@ -585,6 +611,7 @@ private struct CourseStopRow: View {
 private struct CourseLegRow: View {
     let leg: CourseLeg
     let title: String?
+    var nextDay = false
     let onRoute: () -> Void
 
     var body: some View {
@@ -617,27 +644,61 @@ private struct CourseLegRow: View {
 
     private var summary: String {
         let mode = leg.mode == "PUBLIC" ? "대중교통" : "도보"
-        return "\(mode) \(CourseDetailView.duration(leg.estMinutes)) · \(CourseDetailView.distance(leg.distanceMeters))"
+        let text = "\(mode) \(CourseDetailView.duration(leg.estMinutes)) · \(CourseDetailView.distance(leg.distanceMeters))"
+        return nextDay ? "다음 날 이동 · \(text)" : text
+    }
+}
+
+/// 일차 헤더 (숙박 일정)
+private struct CourseDayHeader: View {
+    let day: Int
+    let startTime: String?
+    let first: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(day)일차").font(.system(size: 11, weight: .heavy)).foregroundStyle(.white)
+                .padding(.horizontal, 9).frame(height: 22)
+                .background(Capsule().fill(Theme.red))
+            if let t = startTime, !t.isEmpty {
+                Text("\(t.prefix(5)) 출발").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.gray)
+            }
+            Rectangle().fill(Theme.line).frame(height: 1)
+        }
+        .padding(.top, first ? 0 : 10).padding(.bottom, 4)
     }
 }
 
 private struct CourseMissionCard: View {
-    let index: Int
+    let label: String
     let mission: CourseMission
-    let stopName: String
     let capture: MediaItem?
     let onCamera: () -> Void
     let onAlbum: () -> Void
+    @State private var expanded = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            CourseSeqBadge(seq: index).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(eyebrow).font(.system(size: 10, weight: .heavy)).tracking(0.3)
-                    .foregroundStyle(Theme.red).lineLimit(1)
-                Text(mission.title).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(label).font(.system(size: 10, weight: .heavy)).foregroundStyle(Theme.red)
+                        .padding(.horizontal, 6).frame(height: 18)
+                        .background(Capsule().fill(Theme.blueSoft))
+                    Image(systemName: mission.isVideo ? "video.fill" : "camera.fill")
+                        .font(.system(size: 10)).foregroundStyle(Theme.red)
+                    Text(mission.isVideo ? "영상 \(mission.durationSec ?? 15)초" : "사진")
+                        .font(.system(size: 10, weight: .heavy)).foregroundStyle(Theme.red)
+                }
+                Text(mission.title).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let g = mission.guide, !g.isEmpty {
                     Text(g).font(.system(size: 12)).foregroundStyle(Theme.gray)
+                        .lineLimit(expanded ? nil : 2)
+                    if g.count > 50 {
+                        Button(expanded ? "접기" : "더보기") { withAnimation(.snappy) { expanded.toggle() } }
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.gray)
+                            .buttonStyle(.plain)
+                    }
                 }
                 Menu {
                     if CameraPicker.isAvailable {
@@ -645,30 +706,23 @@ private struct CourseMissionCard: View {
                     }
                     Button { onAlbum() } label: { Label("앨범에서 고르기", systemImage: "photo.on.rectangle") }
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         Image(systemName: mission.isVideo ? "video.fill" : "camera.fill")
-                        Text(capture != nil ? "다시 찍기" : (mission.isVideo ? "미션 영상 찍기" : "미션 사진 찍기"))
+                        Text(capture != nil ? "다시 찍기" : (mission.isVideo ? "영상 찍기" : "사진 찍기"))
                     }
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(Theme.red)
-                    .frame(maxWidth: .infinity).frame(height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.blueSoft.opacity(0.6)))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.red.opacity(0.4), lineWidth: 1))
+                    .padding(.horizontal, 12).frame(height: 28)
+                    .background(Capsule().fill(Theme.blueSoft.opacity(0.6)))
+                    .overlay(Capsule().strokeBorder(Theme.red.opacity(0.4), lineWidth: 1))
                 }
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
-            CourseStamp(image: capture?.thumbnail, captured: capture != nil, isVideo: mission.isVideo)
-                .padding(.top, 4)
+            Spacer(minLength: 0)
+            CourseStamp(image: capture?.thumbnail, captured: capture != nil, isVideo: mission.isVideo, size: 48)
         }
-        .padding(14)
+        .padding(12)
         .courseCardStyle()
-    }
-
-    private var eyebrow: String {
-        if mission.isVideo {
-            return "VIDEO MISSION · \(mission.durationSec ?? 15)초 · \(stopName)"
-        }
-        return "PHOTO MISSION · \(stopName)"
     }
 }
 
@@ -677,7 +731,7 @@ private struct CourseStamp: View {
     let image: UIImage?
     let captured: Bool
     let isVideo: Bool
-    private let size: CGFloat = 64
+    var size: CGFloat = 64
 
     var body: some View {
         ZStack {
@@ -694,7 +748,7 @@ private struct CourseStamp: View {
                 .overlay(Circle().strokeBorder(Theme.red, lineWidth: 3))
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: size * 0.3))
                         .foregroundStyle(.white, Theme.red)
                         .background(Circle().fill(.white).padding(2))
                         .offset(x: 4, y: 4)
@@ -705,7 +759,7 @@ private struct CourseStamp: View {
                     .strokeBorder(Theme.red.opacity(0.55), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                     .frame(width: size, height: size)
                 Text("SEOUL\nLOG")
-                    .font(.system(size: 10, weight: .heavy))
+                    .font(.system(size: size * 0.16, weight: .heavy))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(Theme.red.opacity(0.55))
                     .rotationEffect(.degrees(-12))
