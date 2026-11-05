@@ -152,6 +152,21 @@ struct CommunityFeed: Codable {
     let hasNext: Bool
 }
 struct CommunityTag: Codable, Hashable { let tag: String; let postCount: Int }
+/// 커뮤니티 댓글 (Backend /api/community/posts/{postId}/comments) — 오래된 순, 일반 텍스트
+struct CommunityComment: Codable, Identifiable, Hashable {
+    let id: UUID
+    let postId: UUID
+    let content: String
+    let author: CommunityAuthor
+    let createdAt: Date?
+    let updatedAt: Date?
+    var isEdited: Bool {
+        guard let c = createdAt, let u = updatedAt else { return false }
+        return u.timeIntervalSince(c) > 1
+    }
+}
+struct CommentWriteBody: Encodable { let content: String }
+
 struct CommunityCreateBody: Encodable { let title: String; let caption: String?; let tags: [String] }
 
 // MARK: 코스 DTO (Backend /api/courses)
@@ -494,6 +509,30 @@ struct APIClient {
         ]
         let (body, type) = Self.multipart(parts)
         return try await send("POST", "/api/community/posts", token: token, rawBody: body, contentType: type, timeout: 180)
+    }
+
+    // MARK: 커뮤니티 댓글 — 목록은 비로그인 가능, 작성·수정·삭제는 본인만
+
+    func comments(postId: UUID, page: Int = 0, size: Int = 20) async throws -> PageResponse<CommunityComment> {
+        try await send("GET", "/api/community/posts/\(postId.uuidString.lowercased())/comments",
+                       query: [URLQueryItem(name: "page", value: "\(page)"), URLQueryItem(name: "size", value: "\(size)")],
+                       body: Optional<LoginBody>.none)
+    }
+
+    func addComment(postId: UUID, content: String, token: String) async throws -> CommunityComment {
+        try await send("POST", "/api/community/posts/\(postId.uuidString.lowercased())/comments", token: token,
+                       body: CommentWriteBody(content: content))
+    }
+
+    func editComment(postId: UUID, commentId: UUID, content: String, token: String) async throws -> CommunityComment {
+        try await send("PATCH", "/api/community/posts/\(postId.uuidString.lowercased())/comments/\(commentId.uuidString.lowercased())",
+                       token: token, body: CommentWriteBody(content: content))
+    }
+
+    func deleteComment(postId: UUID, commentId: UUID, token: String) async throws {
+        let _: EmptyResponse = try await send("DELETE",
+            "/api/community/posts/\(postId.uuidString.lowercased())/comments/\(commentId.uuidString.lowercased())",
+            token: token, body: Optional<LoginBody>.none)
     }
 
     // MARK: 코스 (탐색하기) — 목록·상세는 비로그인 가능, 저장·AI 추천은 로그인

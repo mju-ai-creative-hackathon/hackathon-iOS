@@ -63,6 +63,12 @@ struct CommunityView: View {
         }
         .background(Theme.bg)
         .task { if community.posts.isEmpty { await community.reload() } }
+        #if DEBUG
+        .task {   // 디버그 전용: `-openPost <uuid>` → 게시물 상세 바로 열기
+            if let s = UserDefaults.standard.string(forKey: "openPost"), let id = UUID(uuidString: s), selected == nil,
+               let p = try? await APIClient.shared.communityPost(id: id) { selected = p }
+        }
+        #endif
         .sheet(item: $selected) { post in
             PostDetailView(post: post) { tag in
                 selected = nil
@@ -325,8 +331,12 @@ struct PostDetailView: View {
                     }
                 }
                 .padding(16)
+
+                Rectangle().fill(Theme.line).frame(height: 0.5).padding(.horizontal, 16)
+                PostComments(postId: post.id)
             }
         }
+        .scrollDismissesKeyboard(.interactively)
         .background(Theme.bg)
         .alert("게시물을 삭제할까요?", isPresented: $confirmDelete) {
             Button("삭제", role: .destructive) { delete() }
@@ -407,6 +417,227 @@ private struct FlowTags: View {
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.red)
                 }
             }
+        }
+    }
+}
+
+
+// MARK: - 댓글 (GET/POST/PATCH/DELETE /api/community/posts/{id}/comments)
+
+private struct PostComments: View {
+    let postId: UUID
+
+    @Environment(AuthSession.self) private var auth
+    @State private var comments: [CommunityComment] = []
+    @State private var total = 0
+    @State private var nextPage = 0
+    @State private var hasNext = false
+    @State private var loading = false
+    @State private var loadError: String?
+
+    @State private var text = ""
+    @State private var editing: CommunityComment?
+    @State private var sending = false
+    @State private var deleting: CommunityComment?
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    private let api = APIClient.shared
+    private static let maxLength = 1000
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Text("댓글").font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
+                Text("\(total)").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.red)
+            }
+            composer
+            if comments.isEmpty {
+                Group {
+                    if loading { ProgressView().tint(Theme.red) }
+                    else if let e = loadError {
+                        VStack(spacing: 6) {
+                            Text(e).font(.system(size: 13)).foregroundStyle(Theme.gray)
+                            Button("다시 시도") { Task { await reload() } }
+                                .font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.red)
+                        }
+                    } else {
+                        Text("아직 댓글이 없어요. 첫 댓글을 남겨보세요!")
+                            .font(.system(size: 13)).foregroundStyle(Theme.gray)
+                    }
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 20)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(comments) { c in row(c) }
+                }
+                if hasNext {
+                    Button { Task { await loadMore() } } label: {
+                        HStack(spacing: 6) {
+                            if loading { ProgressView().controlSize(.small) }
+                            Text("댓글 더 보기")
+                        }
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.gray)
+                        .frame(maxWidth: .infinity).frame(height: 36)
+                    }
+                    .disabled(loading)
+                }
+            }
+        }
+        .padding(16)
+        .padding(.bottom, 24)
+        .task(id: postId) { await reload() }
+        .alert("댓글을 삭제할까요?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("삭제", role: .destructive) { if let c = deleting { Task { await remove(c) } } }
+            Button("취소", role: .cancel) {}
+        }
+        .alert("알림", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("확인", role: .cancel) {}
+        } message: { Text(error ?? "") }
+    }
+
+    // MARK: 입력창
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    @ViewBuilder private var composer: some View {
+        if auth.user == nil {
+            Button { auth.logout() } label: {
+                Text("로그인하고 댓글을 남겨보세요")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.red)
+                    .frame(maxWidth: .infinity).frame(height: 44)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if let e = editing {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pencil").font(.system(size: 11, weight: .bold))
+                        Text("댓글 수정 중").font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Button("취소") { editing = nil; text = ""; focused = false }
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(Theme.red)
+                    .id(e.id)
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField(editing == nil ? "댓글을 입력하세요" : "수정할 내용을 입력하세요", text: $text, axis: .vertical)
+                        .lineLimit(1...5)
+                        .font(.system(size: 14))
+                        .focused($focused)
+                        .onChange(of: text) { _, v in if v.count > Self.maxLength { text = String(v.prefix(Self.maxLength)) } }
+                    Button { Task { await submit() } } label: {
+                        Group {
+                            if sending { ProgressView().tint(.white) }
+                            else { Image(systemName: editing == nil ? "arrow.up" : "checkmark").font(.system(size: 13, weight: .heavy)) }
+                        }
+                        .foregroundStyle(.white).frame(width: 32, height: 32)
+                        .background(Circle().fill(trimmed.isEmpty ? Theme.line : Theme.red))
+                    }
+                    .disabled(trimmed.isEmpty || sending)
+                }
+                .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.white))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+                if text.count > Self.maxLength - 100 {
+                    Text("\(text.count)/\(Self.maxLength)").font(.system(size: 11)).foregroundStyle(Theme.gray)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    // MARK: 댓글 한 줄
+
+    private func row(_ c: CommunityComment) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            AsyncImage(url: APIClient.shared.absolute(c.author.profileImageUrl)) { $0.resizable().scaledToFill() } placeholder: {
+                Image(systemName: "person.crop.circle.fill").resizable().foregroundStyle(Theme.red.opacity(0.6))
+            }
+            .frame(width: 30, height: 30).clipShape(Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(c.author.name).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.ink)
+                    if let d = c.createdAt {
+                        Text(d.formatted(.relative(presentation: .named)))
+                            .font(.system(size: 11)).foregroundStyle(Theme.gray)
+                    }
+                    if c.isEdited { Text("수정됨").font(.system(size: 11)).foregroundStyle(Theme.gray) }
+                }
+                // 일반 텍스트로만 표시 (HTML 해석 X)
+                Text(verbatim: c.content).font(.system(size: 14)).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+            if auth.user?.id == c.author.id {
+                Menu {
+                    Button { editing = c; text = c.content; focused = true } label: { Label("수정", systemImage: "pencil") }
+                    Button(role: .destructive) { deleting = c } label: { Label("삭제", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.gray)
+                        .frame(width: 30, height: 30).contentShape(Rectangle())
+                }
+            }
+        }
+    }
+
+    // MARK: 동작
+
+    private func reload() async {
+        loading = true; loadError = nil
+        defer { loading = false }
+        do {
+            let p = try await api.comments(postId: postId, page: 0)
+            comments = p.content; total = p.totalElements; hasNext = p.hasNext; nextPage = 1
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? "댓글을 불러오지 못했어요."
+        }
+    }
+
+    private func loadMore() async {
+        guard hasNext, !loading else { return }
+        loading = true
+        defer { loading = false }
+        guard let p = try? await api.comments(postId: postId, page: nextPage) else { return }
+        let known = Set(comments.map(\.id))
+        comments += p.content.filter { !known.contains($0.id) }
+        total = p.totalElements; hasNext = p.hasNext; nextPage += 1
+    }
+
+    private func submit() async {
+        let body = trimmed
+        guard !body.isEmpty, !sending else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            if let e = editing {
+                let updated = try await auth.authorized {
+                    try await api.editComment(postId: postId, commentId: e.id, content: body, token: $0)
+                }
+                if let i = comments.firstIndex(where: { $0.id == e.id }) { comments[i] = updated }
+                editing = nil
+            } else {
+                let new = try await auth.authorized { try await api.addComment(postId: postId, content: body, token: $0) }
+                // 오래된 순 목록 → 다 불러온 상태면 끝에 붙이고, 아니면 개수만 갱신
+                if !hasNext { comments.append(new) }
+                total += 1
+            }
+            text = ""; focused = false
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? "댓글을 저장하지 못했어요."
+        }
+    }
+
+    private func remove(_ c: CommunityComment) async {
+        do {
+            try await auth.authorized { try await api.deleteComment(postId: postId, commentId: c.id, token: $0) }
+            comments.removeAll { $0.id == c.id }
+            total = max(0, total - 1)
+            if editing?.id == c.id { editing = nil; text = "" }
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? "댓글을 삭제하지 못했어요."
         }
     }
 }
