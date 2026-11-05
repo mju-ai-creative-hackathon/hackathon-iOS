@@ -6,7 +6,6 @@ struct CommunityView: View {
     @Environment(CommunityStore.self) private var community
     @Environment(AppStore.self) private var store
     @State private var selected: CommunityPost?
-    @State private var peek: CommunityPost?          // 길게 누르는 동안 미리보기
     @FocusState private var searching: Bool
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
@@ -20,9 +19,7 @@ struct CommunityView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(community.posts) { post in
-                        GridCell(post: post) { pressing in
-                            withAnimation(.snappy(duration: 0.22)) { peek = pressing ? post : nil }
-                        }
+                        GridCell(post: post)
                             .onTapGesture { selected = post }
                             .task { await community.loadMoreIfNeeded(current: post) }
                     }
@@ -33,8 +30,6 @@ struct CommunityView: View {
             .refreshable { await community.reload() }
         }
         .background(Theme.bg)
-        .overlay { if let peek { PeekPreview(post: peek).transition(.opacity.combined(with: .scale(scale: 0.94))) } }
-        .sensoryFeedback(.impact(weight: .medium), trigger: peek?.id) { _, new in new != nil }
         .task { if community.posts.isEmpty { await community.reload() } }
         .sheet(item: $selected) { post in
             PostDetailView(post: post) { tag in
@@ -134,23 +129,40 @@ struct CommunityView: View {
 
 private struct GridCell: View {
     let post: CommunityPost
-    var onPeek: (Bool) -> Void = { _ in }
     @GestureState private var holding = false
+    @State private var player: LoopingPlayer?
 
     var body: some View {
         cell
-            // 길게 누르고 있는 동안만 미리보기 (손 떼면 닫힘). 짧은 탭·스크롤은 그대로
+            // 누르고 있는 동안 썸네일 자리에서 영상 재생, 손 떼면 멈추고 썸네일로. 짧은 탭·스크롤은 그대로
+            .overlay {
+                if holding, let player {
+                    PlayerLayerView(player: player.player).allowsHitTesting(false).transition(.opacity)
+                }
+            }
+            .clipped()
             .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.3)
+                LongPressGesture(minimumDuration: 0.2)
                     .sequenced(before: DragGesture(minimumDistance: 0))
                     .updating($holding) { value, state, _ in
                         if case .second(true, _) = value { state = true }
                     }
             )
-            .onChange(of: holding) { _, h in onPeek(h) }
-            .scaleEffect(holding ? 0.96 : 1)
-            .animation(.snappy(duration: 0.15), value: holding)
+            .onChange(of: holding) { _, h in h ? startPreview() : stopPreview() }
+            .sensoryFeedback(.impact(weight: .light), trigger: holding) { _, new in new }
+            .animation(.easeOut(duration: 0.15), value: holding)
+            .onDisappear(perform: stopPreview)
     }
+
+    private func startPreview() {
+        guard let m = post.media.first(where: \.isVideo), let url = APIClient.shared.absolute(m.url) else { return }
+        let p = player ?? LoopingPlayer(url: url)
+        p.player.seek(to: .zero)
+        p.play()
+        player = p
+    }
+
+    private func stopPreview() { player?.pause() }
 
     private var cell: some View {
         Color(Theme.cream)
@@ -301,54 +313,5 @@ private struct FlowTags: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - 길게 눌러 미리보기 (영상 자동 재생)
-
-private struct PeekPreview: View {
-    let post: CommunityPost
-    @State private var player: LoopingPlayer?
-
-    var body: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
-            Color.black.opacity(0.25).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.fill").font(.system(size: 26)).foregroundStyle(Theme.red.opacity(0.8))
-                    Text(post.author.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
-                    Spacer()
-                }
-                .padding(.horizontal, 14).frame(height: 48)
-                ZStack {
-                    AsyncImage(url: APIClient.shared.absolute(post.thumbnailUrl)) { $0.resizable().scaledToFill() } placeholder: { Color.black }
-                    if let player { PlayerLayerView(player: player.player) }
-                }
-                .frame(maxWidth: .infinity).aspectRatio(9 / 14, contentMode: .fit)
-                .clipped()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(post.title).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
-                    if !post.tags.isEmpty {
-                        Text(post.tags.prefix(4).map { "#\($0)" }.joined(separator: " "))
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.red).lineLimit(1)
-                    }
-                }
-                .padding(14)
-            }
-            .background(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .shadow(color: .black.opacity(0.25), radius: 30, y: 10)
-            .padding(.horizontal, 28)
-        }
-        .allowsHitTesting(false)
-        .onAppear {
-            guard let m = post.media.first(where: \.isVideo), let url = APIClient.shared.absolute(m.url) else { return }
-            let p = LoopingPlayer(url: url)
-            p.player.isMuted = false
-            p.play()
-            player = p
-        }
-        .onDisappear { player?.pause(); player = nil }
     }
 }
