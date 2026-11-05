@@ -18,8 +18,8 @@ struct CommunityView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(community.posts) { post in
-                        GridCell(post: post, saved: community.saved.contains(post.id)) { community.toggleSaved(post.id) }
-                            .onTapGesture { selected = post }
+                        GridCell(post: post, saved: community.saved.contains(post.id),
+                                 onSave: { community.toggleSaved(post.id) }, onTap: { selected = post })
                             .task { await community.loadMoreIfNeeded(current: post) }
                     }
                 }
@@ -132,7 +132,9 @@ private struct GridCell: View {
     let post: CommunityPost
     var saved = false
     var onSave: () -> Void = {}
-    @GestureState private var holding = false
+    var onTap: () -> Void = {}
+    @State private var holding = false
+    @State private var pressTask: Task<Void, Never>?
     @State private var player: LoopingPlayer?
 
     var body: some View {
@@ -194,13 +196,20 @@ private struct GridCell: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.2)
-                    .sequenced(before: DragGesture(minimumDistance: 0))
-                    .updating($holding) { value, state, _ in
-                        if case .second(true, _) = value { state = true }
+            // 탭 → 상세, 누르고 있기 → 그 자리 재생. onTapGesture 를 먼저 둬야 ScrollView 스크롤이 막히지 않는다
+            .onTapGesture(perform: onTap)
+            .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 12, perform: {}) { pressing in
+                pressTask?.cancel()
+                if pressing {
+                    pressTask = Task {
+                        try? await Task.sleep(for: .milliseconds(220))
+                        guard !Task.isCancelled else { return }
+                        holding = true
                     }
-            )
+                } else {
+                    holding = false
+                }
+            }
             .onChange(of: holding) { _, h in h ? startPreview() : stopPreview() }
             .sensoryFeedback(.impact(weight: .light), trigger: holding) { _, new in new }
             .animation(.easeOut(duration: 0.15), value: holding)
