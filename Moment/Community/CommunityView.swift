@@ -202,13 +202,7 @@ private struct GridCell: View {
             .aspectRatio(0.74, contentMode: .fit)
             .overlay {
                 ZStack {
-                    AsyncImage(url: APIClient.shared.absolute(post.thumbnailUrl)) { phase in
-                        switch phase {
-                        case .success(let img): img.resizable().scaledToFill()
-                        case .failure: Image(systemName: "photo").foregroundStyle(Theme.line)
-                        default: Color.clear
-                        }
-                    }
+                    CachedImage(url: APIClient.shared.absolute(post.thumbnailUrl))
                     // 누르고 있는 동안 썸네일 자리에서 영상 재생
                     // 레이어는 미리 깔아두고, 첫 프레임이 그려질 준비가 된 뒤에만 보이게 (검은 화면 방지)
                     if let player {
