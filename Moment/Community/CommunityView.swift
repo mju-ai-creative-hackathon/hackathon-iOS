@@ -8,22 +8,22 @@ struct CommunityView: View {
     @State private var selected: CommunityPost?
     @FocusState private var searching: Bool
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
 
     var body: some View {
         @Bindable var community = community
         VStack(spacing: 0) {
-            header
-            searchBar(text: $community.keyword)
+            searchBar(text: $community.keyword).padding(.top, 10)
             tagChips
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 2) {
+                LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(community.posts) { post in
-                        GridCell(post: post)
+                        GridCell(post: post, saved: community.saved.contains(post.id)) { community.toggleSaved(post.id) }
                             .onTapGesture { selected = post }
                             .task { await community.loadMoreIfNeeded(current: post) }
                     }
                 }
+                .padding(.horizontal, 16)
                 footer
             }
             .scrollDismissesKeyboard(.immediately)
@@ -60,7 +60,7 @@ struct CommunityView: View {
     private func searchBar(text: Binding<String>) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(Theme.gray)
-            TextField("장소, 해시태그, 제목 검색", text: text)
+            TextField("보고 싶은 서울을 검색해 보세요", text: text)
                 .focused($searching)
                 .submitLabel(.search)
                 .onSubmit { Task { await community.search() } }
@@ -72,9 +72,10 @@ struct CommunityView: View {
             }
         }
         .font(.system(size: 14))
-        .padding(.horizontal, 12).frame(height: 40)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .padding(.horizontal, 14).frame(height: 46)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
         .padding(.horizontal, 16)
     }
 
@@ -96,7 +97,7 @@ struct CommunityView: View {
                 .foregroundStyle(on ? .white : Theme.ink)
                 .padding(.horizontal, 14).frame(height: 32)
                 .background(Capsule().fill(on ? Theme.red : .white))
-                .overlay(Capsule().strokeBorder(on ? .clear : Theme.line, lineWidth: 1))
+                .overlay(Capsule().strokeBorder(on ? .clear : Theme.red.opacity(0.45), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -129,18 +130,70 @@ struct CommunityView: View {
 
 private struct GridCell: View {
     let post: CommunityPost
+    var saved = false
+    var onSave: () -> Void = {}
     @GestureState private var holding = false
     @State private var player: LoopingPlayer?
 
     var body: some View {
-        cell
-            // 누르고 있는 동안 썸네일 자리에서 영상 재생, 손 떼면 멈추고 썸네일로. 짧은 탭·스크롤은 그대로
+        Color(Theme.cream)
+            .aspectRatio(0.74, contentMode: .fit)
             .overlay {
-                if holding, let player {
-                    PlayerLayerView(player: player.player).allowsHitTesting(false).transition(.opacity)
+                ZStack {
+                    AsyncImage(url: APIClient.shared.absolute(post.thumbnailUrl)) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        case .failure: Image(systemName: "photo").foregroundStyle(Theme.line)
+                        default: Color.clear
+                        }
+                    }
+                    // 누르고 있는 동안 썸네일 자리에서 영상 재생
+                    if holding, let player {
+                        PlayerLayerView(player: player.player).allowsHitTesting(false).transition(.opacity)
+                    }
+                    LinearGradient(colors: [.black.opacity(0.25), .clear, .clear, .black.opacity(0.8)],
+                                   startPoint: .top, endPoint: .bottom)
                 }
             }
-            .clipped()
+            .overlay(alignment: .topLeading) {
+                Text("SHORTS").font(.system(size: 8, weight: .heavy)).tracking(0.6).foregroundStyle(.white)
+                    .padding(.horizontal, 6).frame(height: 17)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.22)))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.5), lineWidth: 0.8))
+                    .padding(10)
+            }
+            .overlay(alignment: .topTrailing) {
+                Button(action: onSave) {
+                    Image(systemName: saved ? "bookmark.fill" : "bookmark")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(.black.opacity(0.28)))
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+            }
+            .overlay {
+                if !holding, post.media.first?.isVideo == true {
+                    Image(systemName: "play.fill").font(.system(size: 13)).foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(.black.opacity(0.3)))
+                        .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 1.2))
+                        .transition(.opacity)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("@\(post.author.name)").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                    Text(post.title).font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(2)
+                    if !post.tags.isEmpty {
+                        Text(post.tags.prefix(2).map { "#\($0)" }.joined(separator: " "))
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
+                    }
+                }
+                .padding(10)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.2)
                     .sequenced(before: DragGesture(minimumDistance: 0))
@@ -163,29 +216,6 @@ private struct GridCell: View {
     }
 
     private func stopPreview() { player?.pause() }
-
-    private var cell: some View {
-        Color(Theme.cream)
-            .aspectRatio(1, contentMode: .fill)
-            .overlay {
-                AsyncImage(url: APIClient.shared.absolute(post.thumbnailUrl)) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    case .failure: Image(systemName: "photo").foregroundStyle(Theme.line)
-                    default: Color.clear
-                    }
-                }
-            }
-            .clipped()
-            .overlay(alignment: .topTrailing) {
-                if post.media.first?.isVideo == true {
-                    Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).shadow(radius: 2).padding(6)
-                } else if post.media.count > 1 {
-                    Image(systemName: "square.on.square.fill").font(.system(size: 11)).foregroundStyle(.white).shadow(radius: 2).padding(6)
-                }
-            }
-            .contentShape(Rectangle())
-    }
 }
 
 // MARK: - 상세

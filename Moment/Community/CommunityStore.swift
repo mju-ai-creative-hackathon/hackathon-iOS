@@ -53,6 +53,10 @@ final class CommunityStore {
 
     func remove(_ id: UUID) { posts.removeAll { $0.id == id } }
 
+    /// 게시물 저장(북마크) — 서버 API 없음, 앱 실행 중에만 유지
+    private(set) var saved: Set<UUID> = []
+    func toggleSaved(_ id: UUID) { if saved.contains(id) { saved.remove(id) } else { saved.insert(id) } }
+
     private func loadTags() async {
         if let t = try? await call({ try await self.api.communityTags(token: $0) }) { tags = t }
     }
