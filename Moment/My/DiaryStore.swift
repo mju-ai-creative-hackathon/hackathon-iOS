@@ -114,6 +114,13 @@ final class DiaryStore: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// 커뮤니티 코스 가져오기로 서버가 바로 시작한 일정을 이어받아 수집 시작
+    func adopt(_ d: DiaryDetail) {
+        active = d; steps = 0; points = []
+        persist()
+        beginSensors(from: d.startedAt)
+    }
+
     /// 일정 종료 → 걸음수·경로 업로드. 성공해야 단말 데이터 삭제
     @discardableResult
     func finish() async -> DiaryDetail? {

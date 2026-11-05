@@ -128,6 +128,38 @@ final class TourStore {
     }
     struct RefineError: LocalizedError { let message: String; var errorDescription: String? { message } }
 
+    /// 진행 중 일정의 "현재 계획" 코스 (남은 일정 수정으로 새 코스가 생기면 그 ID). 일기장은 원래 코스 ID 그대로
+    var activePlanCourseId: Int64?
+    /// 진행 중 계획에서 마지막으로 완료한 장소 seq (0 = 없음)
+    var completedThroughSeq: [Int64: Int] = [:]
+
+    /// 완료한 장소는 유지하고 남은 일정만 수정 → 새 AI 코스 (로그인 필요, 30~40초)
+    func refineRemaining(_ courseId: Int64, completedThrough seq: Int, prompt: String) async throws -> CourseDetail {
+        guard let auth else { throw RefineError(message: "로그인이 필요해요.") }
+        let text = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
+        isRefining = true
+        defer { isRefining = false }
+        let (lat, lng) = location.latLng
+        do {
+            let d = try await auth.authorized {
+                try await self.api.refineRemaining(courseId: courseId, completedThroughStopSeq: seq, prompt: text,
+                                                   lat: lat, lng: lng, token: $0)
+            }
+            activePlanCourseId = d.id
+            completedThroughSeq[d.id] = seq
+            return d
+        } catch let e as APIError {
+            let message: String = switch e.status {
+            case 400: e.errorDescription ?? "수정할 남은 일정이 없어요."
+            case 429: "오늘 AI 요청 횟수를 다 썼어요. 내일 다시 시도해 주세요."
+            case 502: "남은 일정에 넣을 장소를 찾지 못했어요. 다르게 말해볼까요?"
+            case 503: "AI 추천을 잠시 쓸 수 없어요."
+            default: e.errorDescription ?? "남은 일정을 고치지 못했어요."
+            }
+            throw RefineError(message: message)
+        }
+    }
+
     func clearRecommendations() { recommendations = []; recommendError = nil }
 
     /// 저장 토글 → 서버 결과로 목록·추천 상태 갱신

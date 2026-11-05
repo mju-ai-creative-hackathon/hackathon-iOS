@@ -128,7 +128,7 @@ struct TourView: View {
                 Text(e).font(.system(size: 12)).foregroundStyle(Theme.red)
             }
             HStack(spacing: 8) {
-                if let cid = a.courseId {
+                if let cid = tour.activePlanCourseId ?? a.courseId {
                     Button { path.append(.course(cid)) } label: {
                         Text("코스 보기").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
                             .frame(maxWidth: .infinity).frame(height: 40)

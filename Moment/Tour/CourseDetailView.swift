@@ -22,6 +22,8 @@ struct CourseDetailView: View {
     @State private var mapExpanded = false
     @State private var refinePrompt = ""
     @State private var refineError: String?
+    @State private var pickedDoneSeq: Int?                  // 남은 일정 수정: "여기까지 완료" 선택 (nil = 기본값)
+    @State private var remainingIds: Set<Int64> = []        // 남은 일정 수정으로 생긴 안
     @FocusState private var refineFocused: Bool
     @State private var savedOverride: [Int64: Bool] = [:]
     @State private var saving = false
@@ -95,7 +97,7 @@ struct CourseDetailView: View {
             }
         }
         .task { await loadIfNeeded() }
-        .overlay { if tour.isRefining { RecommendingOverlay(title: "AI가 코스를 고치고 있어요") } }
+        .overlay { if tour.isRefining { RecommendingOverlay(title: refiningTitle) } }
         .alert("코스를 고치지 못했어요", isPresented: Binding(get: { refineError != nil }, set: { if !$0 { refineError = nil } })) {
             Button("확인", role: .cancel) {}
         } message: { Text(refineError ?? "") }
@@ -188,7 +190,7 @@ struct CourseDetailView: View {
                     if options.count > 1 { optionCards }
                     courseCard(course)
                     schedule(course)
-                    refineBar(course)
+                    if isTracking(course) { remainingPanel(course) } else { refineBar(course) }
                     if !course.missions.isEmpty { missions(course) }
                 }
                 .padding(.horizontal, 16)
@@ -236,6 +238,127 @@ struct CourseDetailView: View {
             do {
                 let new = try await tour.refine(course.id, prompt: text)
                 refinePrompt = ""
+                withAnimation(.snappy) {
+                    options.append(new)
+                    selected = options.count - 1
+                }
+                resetCamera()
+            } catch {
+                refineError = (error as? LocalizedError)?.errorDescription ?? "잠시 후 다시 시도해 주세요."
+            }
+        }
+    }
+
+    // MARK: 남은 일정 수정 (진행 중 일정: 완료한 장소는 유지, 이후 일정만 AI가 다시 짜기)
+
+    /// 진행 중인 일정의 코스인지 (원래 코스 또는 남은 일정 수정으로 바뀐 현재 계획)
+    private func isTracking(_ course: CourseDetail) -> Bool {
+        guard let active = diary.active else { return false }
+        return active.courseId == course.id || tour.activePlanCourseId == course.id
+    }
+
+    private var refiningTitle: String {
+        if let course, isTracking(course) { return "AI가 남은 일정을 다시 짜고 있어요" }
+        return "AI가 코스를 고치고 있어요"
+    }
+
+    private func doneSeq(_ course: CourseDetail) -> Int? {
+        guard footprint == nil, isTracking(course) else { return nil }
+        return tour.completedThroughSeq[course.id]
+    }
+
+    fileprivate func progressState(_ stop: CourseStop, done: Int?, next: Int?) -> StopProgress? {
+        guard let done else { return nil }
+        if stop.seq <= done { return .done }
+        return stop.seq == next ? .next : nil
+    }
+
+    private func pickedSeq(_ course: CourseDetail) -> Int {
+        pickedDoneSeq ?? tour.completedThroughSeq[course.id] ?? 0
+    }
+
+    private func remainingPanel(_ course: CourseDetail) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("남은 일정 수정").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
+                Text("완료한 장소는 그대로 두고 이후 일정만 AI가 다시 짜요")
+                    .font(.system(size: 12)).foregroundStyle(Theme.gray)
+            }
+            Text("여기까지 완료").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.ink)
+            doneChips(course)
+            remainingInput(course)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .courseCardStyle()
+    }
+
+    private func doneChips(_ course: CourseDetail) -> some View {
+        let stops = course.stops.sorted { $0.seq < $1.seq }
+        let lastSeq = stops.last?.seq
+        let picked = pickedSeq(course)
+        return VStack(alignment: .leading, spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    doneChip("완료한 장소 없음", seq: 0, picked: picked, disabled: false)
+                    ForEach(stops) { stop in
+                        doneChip("\(stop.seq). \(stop.name)", seq: stop.seq, picked: picked, disabled: stop.seq == lastSeq)
+                    }
+                }
+            }
+            if stops.count > 0 {
+                Text("마지막 장소까지 마쳤다면 수정할 일정이 없어요")
+                    .font(.system(size: 11)).foregroundStyle(Theme.gray)
+            }
+        }
+    }
+
+    private func doneChip(_ title: String, seq: Int, picked: Int, disabled: Bool) -> some View {
+        let on = seq == picked
+        return Button { withAnimation(.snappy) { pickedDoneSeq = seq } } label: {
+            Text(title).font(.system(size: 13, weight: .bold)).lineLimit(1)
+                .foregroundStyle(on ? .white : (disabled ? Theme.gray.opacity(0.5) : Theme.ink))
+                .padding(.horizontal, 12).frame(height: 32)
+                .background(Capsule().fill(on ? Theme.red : .white))
+                .overlay(Capsule().strokeBorder(on ? Theme.red : Theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    private func remainingInput(_ course: CourseDetail) -> some View {
+        let empty = refinePrompt.trimmingCharacters(in: .whitespaces).isEmpty
+        return HStack(spacing: 10) {
+            Image(systemName: "sparkles").foregroundStyle(Theme.red)
+            TextField("비가 와서 이후엔 실내 위주로 바꿔줘", text: $refinePrompt, axis: .vertical)
+                .lineLimit(1...3).font(.system(size: 14))
+                .focused($refineFocused)
+                .submitLabel(.send)
+                .onSubmit { refineRemaining(course) }
+            Button { refineRemaining(course) } label: {
+                Text("수정").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).frame(height: 34)
+                    .background(Capsule().fill(empty ? Theme.line : Theme.red))
+            }
+            .disabled(empty || tour.isRefining)
+        }
+        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.red.opacity(0.3), lineWidth: 1))
+    }
+
+    private func refineRemaining(_ course: CourseDetail) {
+        refineFocused = false
+        guard auth.user != nil else { showLogin = true; return }
+        let text = refinePrompt
+        let seq = pickedSeq(course)
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty, !tour.isRefining else { return }
+        Task {
+            do {
+                let new = try await tour.refineRemaining(course.id, completedThrough: seq, prompt: text)
+                refinePrompt = ""
+                pickedDoneSeq = nil
+                remainingIds.insert(new.id)
                 withAnimation(.snappy) {
                     options.append(new)
                     selected = options.count - 1
@@ -392,11 +515,12 @@ struct CourseDetailView: View {
                     Button {
                         guard !on else { return }
                         selected = i
+                        pickedDoneSeq = nil
                         resetCamera()
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                Text("\(i + 1)안").font(.system(size: 15, weight: .heavy))
+                                Text(remainingIds.contains(opt.id) ? "수정안" : "\(i + 1)안").font(.system(size: 15, weight: .heavy))
                                     .foregroundStyle(on ? Theme.red : Theme.ink)
                                 Spacer()
                                 if on {
@@ -476,6 +600,9 @@ struct CourseDetailView: View {
         let stops = course.stops.sorted { $0.seq < $1.seq }
         let dayCount = Set(stops.map(\.dayNo)).count
         let multi = dayCount > 1
+        let done = doneSeq(course)
+        let nextSeq = done.flatMap { d in stops.first { $0.seq > d }?.seq }
+        let startLeg = (done ?? 0) > 0 ? nil : course.startLeg   // 완료한 장소가 있으면 1번으로 돌아가는 경로 숨김
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(multi ? "여행 일정" : "오늘의 일정").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
@@ -485,14 +612,14 @@ struct CourseDetailView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
-                if let start = course.startLeg {
+                if let start = startLeg {
                     CourseLegRow(leg: start, title: "\(startName(start, course)) → \(start.toName ?? stops.first?.name ?? "")", showsRoute: footprint == nil) { openLeg(start) }
                 }
                 ForEach(Array(stops.enumerated()), id: \.element.id) { i, stop in
                     if multi && (i == 0 || stops[i - 1].dayNo != stop.dayNo) {
-                        CourseDayHeader(day: stop.dayNo, startTime: stop.startTime, first: i == 0 && course.startLeg == nil)
+                        CourseDayHeader(day: stop.dayNo, startTime: stop.startTime, first: i == 0 && startLeg == nil)
                     }
-                    CourseStopRow(stop: stop, visit: visitState(stop))
+                    CourseStopRow(stop: stop, visit: visitState(stop), progress: progressState(stop, done: done, next: nextSeq))
                     if i + 1 < stops.count,
                        let leg = course.legs.first(where: { $0.fromSeq == stop.seq && $0.toSeq == stops[i + 1].seq }) {
                         CourseLegRow(leg: leg, title: nil, nextDay: stops[i + 1].dayNo != stop.dayNo, showsRoute: footprint == nil) { openLeg(leg) }
@@ -572,7 +699,7 @@ struct CourseDetailView: View {
 
     private func bottomBar(_ course: CourseDetail) -> some View {
         let saved = isSaved(course)
-        let trackingThis = diary.active?.courseId == course.id
+        let trackingThis = isTracking(course)
         return VStack(spacing: 8) {
             if trackingThis, let a = diary.active { tripStats(a.startedAt) }
             HStack(spacing: 10) {
@@ -629,7 +756,7 @@ struct CourseDetailView: View {
     @ViewBuilder
     private func tripButton(_ course: CourseDetail) -> some View {
         let active = diary.active
-        if active == nil || active?.courseId == course.id {
+        if active == nil || isTracking(course) {
             let tracking = active != nil
             Button {
                 guard auth.user != nil else { showLogin = true; return }
@@ -797,9 +924,16 @@ private enum StopVisit {
     case missed
 }
 
+/// 진행 중 일정의 장소 진행 상태 (남은 일정 수정)
+private enum StopProgress {
+    case done
+    case next
+}
+
 private struct CourseStopRow: View {
     let stop: CourseStop
     var visit: StopVisit? = nil
+    var progress: StopProgress? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -817,6 +951,7 @@ private struct CourseStopRow: View {
                 HStack(spacing: 6) {
                     Text(timeLine).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.red)
                     if let visit { visitBadge(visit) }
+                    if let progress { progressBadge(progress) }
                 }
                 Text(stop.name).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
                 if let d = stop.description, !d.isEmpty {
@@ -829,6 +964,24 @@ private struct CourseStopRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 6)
+        .opacity(progress == .done ? 0.55 : 1)
+    }
+
+    @ViewBuilder
+    private func progressBadge(_ progress: StopProgress) -> some View {
+        switch progress {
+        case .done:
+            Label("완료", systemImage: "checkmark")
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 10, weight: .heavy)).foregroundStyle(.white)
+                .padding(.horizontal, 7).frame(height: 18)
+                .background(Capsule().fill(Color(red: 0.13, green: 0.62, blue: 0.36)))
+        case .next:
+            Text("다음 장소")
+                .font(.system(size: 10, weight: .heavy)).foregroundStyle(.white)
+                .padding(.horizontal, 7).frame(height: 18)
+                .background(Capsule().fill(Theme.red))
+        }
     }
 
     @ViewBuilder
