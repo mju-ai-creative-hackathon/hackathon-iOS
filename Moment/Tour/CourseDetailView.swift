@@ -455,7 +455,6 @@ struct CourseDetailView: View {
     // MARK: K-Mission
 
     private func missions(_ course: CourseDetail) -> some View {
-        let done = course.missions.filter { tour.captures[$0.id] != nil }.count
         let stopsBySeq = Dictionary(course.stops.map { ($0.seq, $0) }, uniquingKeysWith: { a, _ in a })
         let groups = Dictionary(grouping: course.missions, by: \.stopSeq).sorted { $0.key < $1.key }
         return VStack(alignment: .leading, spacing: 10) {
@@ -466,12 +465,12 @@ struct CourseDetailView: View {
                     .background(Capsule().fill(Theme.red))
                 Text("촬영 미션").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
                 Spacer()
-                Text("\(done)/\(course.missions.count) 완료").font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(done > 0 ? Theme.red : Theme.gray)
+                Text("\(course.missions.count)개").font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.gray)
             }
             HStack(spacing: 8) {
                 Image(systemName: "sparkles").foregroundStyle(Theme.red)
-                Text("미션 사진·영상을 모으면 AI가 한 편의 숏폼으로 편집해요")
+                Text("이 코스에서 찍어볼 장면들이에요. 사진·영상을 모으면 AI가 숏폼으로 편집해요")
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink)
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
@@ -479,24 +478,18 @@ struct CourseDetailView: View {
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
 
             ForEach(groups, id: \.key) { seq, list in
-                let stopDone = list.filter { tour.captures[$0.id] != nil }.count
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         CourseSeqBadge(seq: seq, size: 20)
                         Text(stopsBySeq[seq]?.name ?? "\(seq)번째 장소")
                             .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text("\(stopDone)/\(list.count)").font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(stopDone == list.count ? Theme.red : Theme.gray)
+                        Text("\(list.count)개").font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.gray)
                     }
                     .padding(.top, 6)
                     ForEach(Array(list.enumerated()), id: \.element.id) { j, mission in
-                        CourseMissionCard(
-                            label: "\(seq)-\(j + 1)", mission: mission,
-                            capture: tour.captures[mission.id],
-                            onCamera: { cameraMission = mission },
-                            onAlbum: { albumMission = mission; albumOpen = true }
-                        )
+                        CourseMissionCard(label: "\(seq)-\(j + 1)", mission: mission)
                     }
                 }
             }
@@ -510,7 +503,6 @@ struct CourseDetailView: View {
     }
 
     private func bottomBar(_ course: CourseDetail) -> some View {
-        let captured = capturedMissions(course)
         let saved = isSaved(course)
         return HStack(spacing: 10) {
             Button { toggleSave(course) } label: {
@@ -527,17 +519,11 @@ struct CourseDetailView: View {
             .disabled(saving)
 
             Button {
-                if captured.isEmpty {
-                    if let leg = course.startLeg ?? course.legs.first { openLeg(leg) }
-                } else {
-                    store.createDraft = CreateDraft(title: course.title, media: captured.map(\.1),
-                                                    courseId: course.id, missionIds: captured.map(\.0.id))
-                    store.selectedTab = .create
-                }
+                if let leg = course.startLeg ?? course.legs.first { openLeg(leg) }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: captured.isEmpty ? "map.fill" : "wand.and.stars")
-                    Text(captured.isEmpty ? "지도에서 보기" : "숏폼 만들기 (\(captured.count))")
+                    Image(systemName: "map.fill")
+                    Text("지도에서 보기")
                 }
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(.white)
@@ -727,9 +713,6 @@ private struct CourseDayHeader: View {
 private struct CourseMissionCard: View {
     let label: String
     let mission: CourseMission
-    let capture: MediaItem?
-    let onCamera: () -> Void
-    let onAlbum: () -> Void
     @State private var expanded = false
 
     var body: some View {
@@ -755,26 +738,13 @@ private struct CourseMissionCard: View {
                             .buttonStyle(.plain)
                     }
                 }
-                Menu {
-                    if CameraPicker.isAvailable {
-                        Button { onCamera() } label: { Label("카메라로 찍기", systemImage: "camera") }
-                    }
-                    Button { onAlbum() } label: { Label("앨범에서 고르기", systemImage: "photo.on.rectangle") }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: mission.isVideo ? "video.fill" : "camera.fill")
-                        Text(capture != nil ? "다시 찍기" : (mission.isVideo ? "영상 찍기" : "사진 찍기"))
-                    }
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Theme.red)
-                    .padding(.horizontal, 12).frame(height: 28)
-                    .background(Capsule().fill(Theme.blueSoft.opacity(0.6)))
-                    .overlay(Capsule().strokeBorder(Theme.red.opacity(0.4), lineWidth: 1))
-                }
-                .padding(.top, 2)
             }
             Spacer(minLength: 0)
-            CourseStamp(image: capture?.thumbnail, captured: capture != nil, isVideo: mission.isVideo, size: 48)
+            // 추천 화면에서는 미션 소개만 (수행 X)
+            Image(systemName: mission.isVideo ? "video" : "camera")
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.red.opacity(0.8))
+                .frame(width: 40, height: 40)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
         }
         .padding(12)
         .courseCardStyle()
