@@ -194,7 +194,8 @@ private struct GridCell: View {
     var onTap: () -> Void = {}
     var onPress: () -> Void = {}
     @State private var player: LoopingPlayer?
-    @State private var ready = false
+    @State private var ready = false      // 레이어에 첫 프레임 표시 가능
+    @State private var started = false    // 재생 시간이 실제로 흐르기 시작함
 
     var body: some View {
         Color(Theme.cream)
@@ -209,8 +210,11 @@ private struct GridCell: View {
                         }
                     }
                     // 누르고 있는 동안 썸네일 자리에서 영상 재생
-                    if isPlaying, ready, let player {
-                        PlayerLayerView(player: player.player).allowsHitTesting(false).transition(.opacity)
+                    // 레이어는 미리 깔아두고, 첫 프레임이 그려질 준비가 된 뒤에만 보이게 (검은 화면 방지)
+                    if let player {
+                        ReadyPlayerLayerView(player: player.player) { ready = $0 }
+                            .opacity(isPlaying && ready && started ? 1 : 0)
+                            .allowsHitTesting(false)
                     }
                     LinearGradient(colors: [.black.opacity(0.25), .clear, .clear, .black.opacity(0.8)],
                                    startPoint: .top, endPoint: .bottom)
@@ -234,7 +238,7 @@ private struct GridCell: View {
                 .padding(8)
             }
             .overlay {
-                if !(isPlaying && ready), post.media.first?.isVideo == true {
+                if !(isPlaying && ready && started), post.media.first?.isVideo == true {
                     Image(systemName: "play.fill").font(.system(size: 13)).foregroundStyle(.white)
                         .frame(width: 38, height: 38)
                         .background(Circle().fill(.black.opacity(0.3)))
@@ -259,7 +263,7 @@ private struct GridCell: View {
             .onTapGesture(perform: onTap)
             .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 12, perform: onPress)
             .sensoryFeedback(.impact(weight: .light), trigger: isPlaying) { _, new in new }
-            .animation(.easeOut(duration: 0.2), value: isPlaying && ready)
+            .animation(.easeOut(duration: 0.2), value: isPlaying && ready && started)
             .onAppear { if isPlaying { startPreview() } }
             .onChange(of: isPlaying) { _, on in on ? startPreview() : stopPreview() }
             .onDisappear(perform: stopPreview)
@@ -269,17 +273,20 @@ private struct GridCell: View {
         guard let m = post.media.first(where: \.isVideo), let url = APIClient.shared.absolute(m.url) else { return }
         let p = player ?? LoopingPlayer(url: url)
         player = p
+        started = false
         p.play()
-        // 첫 프레임이 준비되면 썸네일 위로 덮기 (검은 화면 깜빡임 방지)
+        // 실제로 프레임이 진행되기 시작하면 표시 (버퍼링 중 멈춘 첫 화면 방지)
         Task {
-            for _ in 0..<50 {
-                if p.player.currentItem?.status == .readyToPlay { ready = true; return }
-                try? await Task.sleep(for: .milliseconds(100))
+            let t0 = p.player.currentTime().seconds
+            for _ in 0..<80 {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard isPlaying else { return }
+                if p.player.timeControlStatus == .playing, p.player.currentTime().seconds > t0 + 0.03 { started = true; return }
             }
         }
     }
 
-    private func stopPreview() { player?.pause(); ready = false }
+    private func stopPreview() { player?.pause(); started = false }
 }
 
 // MARK: - 상세
