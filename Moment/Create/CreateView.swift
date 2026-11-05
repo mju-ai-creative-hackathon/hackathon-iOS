@@ -30,6 +30,8 @@ struct CreateView: View {
     @State private var needsLogin = false
     @State private var isSharing = false
     @State private var shareError: String?
+    @State private var reviewRender: ShortformRender?   // 스토리보드 검토 대기 중인 제작
+    @State private var showReview = false
     @State private var pinned: [MediaItem] = []   // 코스 미션에서 넘어온 소스 (피커와 별개)
 
     /// 백엔드 제작 조건: 5~20개
@@ -60,6 +62,11 @@ struct CreateView: View {
                       matching: .any(of: [.images, .videos]))
         .onChange(of: pickerItems) { _, items in Task { await load(items) } }
         .sheet(isPresented: $showHelp) { HelpSheet().presentationDetents([.medium]) }
+        .fullScreenCover(isPresented: $showReview) {
+            if let r = reviewRender {
+                StoryboardReviewView(render: r) { approved in resumeAfterApproval(approved) }
+            }
+        }
         .sheet(isPresented: $showMusic) {
             MusicSheet(selected: $request.music).presentationDetents([.medium])
         }
@@ -353,6 +360,30 @@ struct CreateView: View {
                     Text("AI 서버 연결 전이라 기기에서 만든 미리보기예요.")
                         .font(.system(size: 11)).foregroundStyle(Theme.gray).padding(.top, 8)
                 }
+            } else if reviewRender != nil {
+                VStack(spacing: 12) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "doc.text.magnifyingglass").font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.red)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("스토리보드가 준비됐어요").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
+                            Text("검토하고 승인하면 영상을 만들어요").font(.system(size: 12)).foregroundStyle(Theme.gray)
+                            if let e = reviewRender?.reviewError, !e.isEmpty {
+                                Text("다시 확인이 필요해요: \(e)").font(.system(size: 12)).foregroundStyle(Theme.red)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    Button { showReview = true } label: {
+                        Text("스토리보드 검토하기")
+                            .font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
+                            .frame(maxWidth: .infinity).frame(height: 50)
+                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
+                    }
+                }
+                .padding(16)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.paper))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.line))
+                .padding(.top, 22)
             } else if aiUnavailable {
                 Button(action: startLocalPreview) {
                     Text("기기에서 미리보기 만들기")
@@ -421,24 +452,59 @@ struct CreateView: View {
     private func startGeneration() {
         genTask?.cancel()
         result = nil; resultVideo = nil; genError = nil; aiUnavailable = false; isLocalPreview = false
+        reviewRender = nil; showReview = false
         progress = 0; stage = "준비 중"; shared = false
         if request.caption.isEmpty { request.caption = request.style.headline }
         let req = request
         let pipeline = ShortformPipeline(auth: auth)
         genTask = Task {
             do {
-                let url = try await pipeline.run(req, title: req.caption) { p, s in
+                let outcome = try await pipeline.run(req, title: req.caption) { p, s in
                     withAnimation(.linear(duration: 0.2)) { progress = p }
                     stage = s
                 }
-                let reel = Reel(author: MockData.me, content: .remoteVideo(url), caption: req.caption, location: nil,
-                                musicTitle: req.music == .none ? "원본 오디오" : "\(req.music.rawValue) · 설로그",
-                                likeCount: 0, commentCount: 0, isMine: true)
-                withAnimation(.spring(duration: 0.4)) { resultVideo = url; result = reel }
+                handle(outcome, req)
             } catch is CancellationError {
             } catch ShortformPipeline.Failure.renderingUnavailable {
                 aiUnavailable = true
                 genError = "영상 제작 서버가 아직 연결되지 않았어요.\n대신 기기에서 미리보기를 만들 수 있어요."
+            } catch {
+                genError = (error as? LocalizedError)?.errorDescription ?? "잠시 후 다시 시도해 주세요."
+            }
+        }
+    }
+
+    /// 제작 결과 반영: 완성 영상 → 결과 화면, 검토 필요 → 검토 카드
+    private func handle(_ outcome: ShortformPipeline.Outcome, _ req: ReelGenerationRequest) {
+        switch outcome {
+        case .needsReview(let r):
+            withAnimation(.snappy) { reviewRender = r }
+            stage = "검토를 기다리는 중"
+        case .finished(let url):
+            reviewRender = nil
+            let reel = Reel(author: MockData.me, content: .remoteVideo(url), caption: req.caption, location: nil,
+                            musicTitle: req.music == .none ? "원본 오디오" : "\(req.music.rawValue) · 설로그",
+                            likeCount: 0, commentCount: 0, isMine: true)
+            withAnimation(.spring(duration: 0.4)) { resultVideo = url; result = reel }
+        }
+    }
+
+    /// 스토리보드 승인 뒤 영상 생성(RENDERING) 이어서 조회
+    private func resumeAfterApproval(_ approved: ShortformRender) {
+        genTask?.cancel()
+        reviewRender = nil; genError = nil
+        stage = "영상을 만드는 중"
+        withAnimation(.linear(duration: 0.2)) { progress = max(progress, 0.75) }
+        let req = request
+        let pipeline = ShortformPipeline(auth: auth)
+        genTask = Task {
+            do {
+                let outcome = try await pipeline.resume(render: approved) { p, s in
+                    withAnimation(.linear(duration: 0.2)) { progress = p }
+                    stage = s
+                }
+                handle(outcome, req)
+            } catch is CancellationError {
             } catch {
                 genError = (error as? LocalizedError)?.errorDescription ?? "잠시 후 다시 시도해 주세요."
             }
@@ -507,7 +573,7 @@ struct CreateView: View {
         request = ReelGenerationRequest(source: .gallery, media: [])
         pinned = []
         pickerItems = []; result = nil; resultVideo = nil; genError = nil; aiUnavailable = false
-        isLocalPreview = false; progress = 0; shared = false
+        isLocalPreview = false; progress = 0; shared = false; reviewRender = nil
         step = .photos
     }
 

@@ -20,12 +20,18 @@ struct ShortformPipeline {
         }
     }
 
+    /// 제작 결과: 완성 영상 또는 스토리보드 검토 대기
+    enum Outcome {
+        case finished(URL)
+        case needsReview(ShortformRender)
+    }
+
     let auth: AuthSession
     private let api = APIClient.shared
 
-    /// onProgress(0...1, 단계 문구)
+    /// onProgress(0...1, 단계 문구). 검토 단계(AWAITING_REVIEW)에 들어서면 `.needsReview` 로 멈춘다.
     func run(_ request: ReelGenerationRequest, title: String,
-             onProgress: @escaping (Double, String) -> Void) async throws -> URL {
+             onProgress: @escaping (Double, String) -> Void) async throws -> Outcome {
         onProgress(0.02, "제작 서버 확인 중")
         let options = try await api.shortformOptions()
         guard options.renderingAvailable else { throw Failure.renderingUnavailable }
@@ -70,25 +76,80 @@ struct ShortformPipeline {
             throw Failure.renderingUnavailable
         }
 
-        // 5) 상태 조회 (3~5초 간격 권장) — 최대 30분
+        // 5) 상태 조회 (3~5초 간격 권장)
+        return try await poll(job, onProgress: onProgress)
+    }
+
+    /// 승인 뒤(phase=RENDERING) 이어서 상태 조회 — 완성되거나 다시 검토로 돌아올 때까지
+    func resume(render: ShortformRender, onProgress: @escaping (Double, String) -> Void) async throws -> Outcome {
+        try await poll(render, onProgress: onProgress)
+    }
+
+    /// 최신 결과 영상 URL 다시 받기 (서명 URL 은 1시간 뒤 만료)
+    func refreshedVideoURL(projectId: UUID, renderId: UUID) async -> URL? {
+        let job = try? await auth.authorized { try await api.render(projectId: projectId, renderId: renderId, token: $0) }
+        return job?.videoUrl.flatMap(URL.init(string:))
+    }
+
+    private func poll(_ initial: ShortformRender, onProgress: @escaping (Double, String) -> Void) async throws -> Outcome {
+        var job = initial
         let started = Date()
         var creep = 0.5
-        while !job.status.isTerminal {
+        var lastPhase = job.phase
+        while true {
+            if job.status.isTerminal { break }
+            if job.isAwaitingReview {
+                onProgress(Self.fraction(job, creep: creep), Self.label(job))
+                return .needsReview(job)
+            }
             try await Task.sleep(for: .seconds(4))
             if Date().timeIntervalSince(started) > 1800 { throw Failure.failed("제작 시간이 너무 오래 걸려요. 잠시 후 다시 확인해 주세요.") }
             let current = job
             job = (try? await auth.authorized {
                 try await api.render(projectId: current.projectId, renderId: current.id, token: $0)
             }) ?? job
-            creep = min(0.95, creep + (0.95 - creep) * 0.08)
-            onProgress(creep, job.status.label)
+            if job.phase != lastPhase { lastPhase = job.phase; creep = Self.range(job.phase).lowerBound }
+            let r = Self.range(job.phase)
+            creep = min(r.upperBound, max(r.lowerBound, creep + (r.upperBound - creep) * 0.08))
+            onProgress(Self.fraction(job, creep: creep), Self.label(job))
         }
 
         guard job.status == .SUCCEEDED, let s = job.videoUrl, let url = URL(string: s) else {
             throw Failure.failed(job.errorMessage ?? "영상을 만들지 못했어요. 다시 시도해 주세요.")
         }
         onProgress(1, "완성!")
-        return url
+        return .finished(url)
+    }
+
+    /// 단계별 진행 막대 구간
+    private static func range(_ phase: String?) -> ClosedRange<Double> {
+        switch phase {
+        case "DRAFTING": 0.5...0.7
+        case "AWAITING_REVIEW": 0.7...0.72
+        case "RENDERING": 0.75...0.97
+        default: 0.5...0.95
+        }
+    }
+
+    private static func fraction(_ job: ShortformRender, creep: Double) -> Double {
+        let r = range(job.phase)
+        if let c = job.progress?.current, let t = job.progress?.total, t > 0 {
+            return r.lowerBound + (r.upperBound - r.lowerBound) * min(1, max(0, Double(c) / Double(t)))
+        }
+        return creep
+    }
+
+    private static func label(_ job: ShortformRender) -> String {
+        var base: String
+        switch job.phase {
+        case "DRAFTING": base = "AI가 초안을 만드는 중"
+        case "AWAITING_REVIEW": base = "검토를 기다리는 중"
+        case "RENDERING": base = "영상을 만드는 중"
+        default: base = job.status.label
+        }
+        if let m = job.progress?.message, !m.isEmpty { base = m }
+        if let c = job.progress?.current, let t = job.progress?.total, t > 0 { base += " \(c)/\(t)" }
+        return base
     }
 
     /// MediaItem → 업로드 파일. 사진은 JPEG(긴 변 2160px)로, 영상은 원본 그대로

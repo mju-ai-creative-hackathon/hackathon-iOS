@@ -221,11 +221,22 @@ private struct GridCell: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                Text("SHORTS").font(.system(size: 8, weight: .heavy)).tracking(0.6).foregroundStyle(.white)
-                    .padding(.horizontal, 6).frame(height: 17)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.22)))
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.5), lineWidth: 0.8))
-                    .padding(10)
+                HStack(spacing: 4) {
+                    Text("SHORTS").font(.system(size: 8, weight: .heavy)).tracking(0.6).foregroundStyle(.white)
+                        .padding(.horizontal, 6).frame(height: 17)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(0.22)))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.5), lineWidth: 0.8))
+                    if post.course != nil {
+                        HStack(spacing: 2) {
+                            Image(systemName: "map.fill").font(.system(size: 7, weight: .bold))
+                            Text("코스").font(.system(size: 9, weight: .heavy))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).frame(height: 17)
+                        .background(Capsule().fill(Theme.red.opacity(0.9)))
+                    }
+                }
+                .padding(10)
             }
             .overlay(alignment: .topTrailing) {
                 Button(action: onSave) {
@@ -302,8 +313,74 @@ struct PostDetailView: View {
     @State private var confirmDelete = false
     @State private var deleting = false
     @State private var error: String?
+    @Environment(AppStore.self) private var store
+    @Environment(DiaryStore.self) private var diary
+    @State private var showCourse = false
+    @State private var importing = false
+    @State private var importError: String?
+    @State private var importDone = false
+
+    private static let inProgressMessage = "이미 진행 중인 여정이 있어요. 마이 탭에서 종료한 뒤 다시 시도해 주세요."
 
     private var isMine: Bool { auth.user?.id == post.author.id }
+
+    private func courseCard(_ course: CommunityLinkedCourse) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "figure.walk").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.red)
+                    .frame(width: 40, height: 40)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.blueSoft))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("이 영상의 코스").font(.system(size: 11, weight: .heavy)).foregroundStyle(Theme.red)
+                    Text(course.title?.isEmpty == false ? course.title! : "연결된 코스")
+                        .font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(2)
+                    Text("코스를 가져와 바로 여정을 시작할 수 있어요").font(.system(size: 12)).foregroundStyle(Theme.gray)
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Button { showCourse = true } label: {
+                    Text("코스 보기").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
+                        .frame(maxWidth: .infinity).frame(height: 42)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cream))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                if !isMine {
+                    Button(action: startImport) {
+                        ZStack {
+                            if importing { ProgressView().tint(.white) }
+                            else { Text("이 코스로 여정 시작").font(.system(size: 14, weight: .bold)).foregroundStyle(.white) }
+                        }
+                        .frame(maxWidth: .infinity).frame(height: 42)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.red))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(importing)
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line, lineWidth: 0.5))
+    }
+
+    private func startImport() {
+        guard auth.user != nil else { auth.logout(); return }
+        guard !diary.isTracking else { importError = Self.inProgressMessage; return }
+        importing = true
+        Task {
+            defer { importing = false }
+            do {
+                let result = try await auth.authorized { try await APIClient.shared.importCommunityCourse(postId: post.id, token: $0) }
+                diary.adopt(result.diary)
+                importDone = true
+            } catch {
+                if (error as? APIError)?.status == 409 { importError = Self.inProgressMessage }
+                else { importError = (error as? LocalizedError)?.errorDescription ?? "잠시 후 다시 시도해 주세요." }
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -332,12 +409,29 @@ struct PostDetailView: View {
                 }
                 .padding(16)
 
+                if let course = post.course {
+                    courseCard(course).padding(.horizontal, 16).padding(.bottom, 16)
+                }
+
                 Rectangle().fill(Theme.line).frame(height: 0.5).padding(.horizontal, 16)
                 PostComments(postId: post.id)
             }
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Theme.bg)
+        .sheet(isPresented: $showCourse) {
+            if let c = post.course { NavigationStack { CourseDetailView(courseId: c.id) } }
+        }
+        .alert("여정을 시작할 수 없어요", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+            Button("확인", role: .cancel) {}
+        } message: { Text(importError ?? "") }
+        .alert("여정을 시작했어요!", isPresented: $importDone) {
+            Button("마이에서 보기") {
+                dismiss()
+                store.selectedTab = .tour
+            }
+            Button("확인", role: .cancel) {}
+        } message: { Text("걸음과 발자취가 기록돼요") }
         .alert("게시물을 삭제할까요?", isPresented: $confirmDelete) {
             Button("삭제", role: .destructive) { delete() }
             Button("취소", role: .cancel) {}
