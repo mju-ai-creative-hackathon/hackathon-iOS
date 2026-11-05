@@ -16,6 +16,9 @@ struct CourseDetailView: View {
     @State private var loadError: String?
 
     @State private var camera: MapCameraPosition = .automatic
+    @State private var focusSeq = 1                         // 지도에서 사진으로 보여줄 장소
+    @State private var walkRoutes: [String: [CLLocationCoordinate2D]] = [:]   // "코스id-from" → 실제 도보 경로
+    @State private var mapExpanded = false
     @State private var savedOverride: [Int64: Bool] = [:]
     @State private var saving = false
     @State private var showLogin = false
@@ -157,68 +160,107 @@ struct CourseDetailView: View {
 
     // MARK: 지도
 
+    /// 경로 지도: 실제 도보 경로 점선 + 선택한 장소만 사진 핀, 나머지는 작은 번호 점 (겹침 없음)
     private func routeMap(_ course: CourseDetail) -> some View {
         let stops = course.stops.sorted { $0.seq < $1.seq }
-        let coords = stops.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng) }
-        let total = course.legs.reduce(0) { $0 + $1.distanceMeters }
-        return ZStack(alignment: .bottom) {
-            Map(position: $camera) {
-                if coords.count > 1 {
-                    // 바깥 글로우 + 안쪽 실선 + 흰 점선 → 트렌디한 경로선
-                    MapPolyline(coordinates: coords)
-                        .stroke(Theme.red.opacity(0.18), style: StrokeStyle(lineWidth: 14, lineCap: .round, lineJoin: .round))
-                    MapPolyline(coordinates: coords)
-                        .stroke(Theme.red, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
-                    MapPolyline(coordinates: coords)
-                        .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 6]))
-                }
-                ForEach(stops) { stop in
-                    Annotation("", coordinate: CLLocationCoordinate2D(latitude: stop.lat, longitude: stop.lng), anchor: .center) {
-                        RoutePin(seq: stop.seq, name: stop.name, isStart: stop.seq == stops.first?.seq,
-                                 isEnd: stops.count > 1 && stop.seq == stops.last?.seq)
+        let focus = stops.first { $0.seq == focusSeq } ?? stops.first
+        let nextLeg = course.legs.first { $0.fromSeq == focus?.seq }
+        return VStack(spacing: 0) {
+            ZStack(alignment: .bottomTrailing) {
+                Map(position: $camera) {
+                    ForEach(Array(zip(stops, stops.dropFirst())), id: \.0.seq) { a, b in
+                        MapPolyline(coordinates: walkRoutes["\(course.id)-\(a.seq)"] ?? [a.coordinate, b.coordinate])
+                            .stroke(Theme.red, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [6, 6]))
+                    }
+                    ForEach(stops) { stop in
+                        Annotation("", coordinate: stop.coordinate, anchor: .center) {
+                            Button { withAnimation(.snappy) { focusSeq = stop.seq } } label: {
+                                StopDot(seq: stop.seq, on: stop.seq == focus?.seq)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if let focus {
+                        Annotation("", coordinate: focus.coordinate, anchor: .bottom) {
+                            PhotoPin(url: courseImageURL(focus.imageUrl)).padding(.bottom, 14)
+                        }
+                    }
+                    if let leg = nextLeg, let a = focus, let b = stops.first(where: { $0.seq == leg.toSeq }) {
+                        let path = walkRoutes["\(course.id)-\(a.seq)"] ?? [a.coordinate, b.coordinate]
+                        Annotation("", coordinate: path[path.count / 2], anchor: .center) {
+                            Text("\(leg.mode == "WALK" ? "도보" : "대중교통") \(leg.estMinutes)분")
+                                .font(.system(size: 13, weight: .heavy)).foregroundStyle(Theme.red)
+                                .shadow(color: .white, radius: 0, x: 1, y: 1).shadow(color: .white, radius: 0, x: -1, y: -1)
+                                .shadow(color: .white, radius: 3)
+                                .offset(x: 34)
+                        }
                     }
                 }
-            }
-            .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
-            .mapControlVisibility(.hidden)
-            .saturation(0.75)
+                .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+                .mapControlVisibility(.hidden)
 
-            // 아래쪽을 배경색으로 녹이고, 그 위에 요약 칩
-            LinearGradient(colors: [.clear, Theme.bg.opacity(0.85), Theme.bg], startPoint: .top, endPoint: .bottom)
-                .frame(height: 70)
-                .allowsHitTesting(false)
-            HStack(spacing: 8) {
-                routeChip("point.topleft.down.to.point.bottomright.curvepath.fill", "\(stops.count)곳")
-                if total > 0 { routeChip("figure.walk", CourseFormat.distance(total)) }
-                routeChip("clock.fill", CourseFormat.duration(course.totalMinutes))
-                Spacer()
-                Button { withAnimation(.smooth) { resetCamera() } } label: {
-                    Image(systemName: "scope").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
-                        .frame(width: 36, height: 36)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                Button { withAnimation(.snappy) { mapExpanded.toggle() } } label: {
+                    Image(systemName: mapExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                        .frame(width: 38, height: 38)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.92)))
+                        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
                 }
+                .padding(10)
             }
-            .padding(.horizontal, 16).padding(.bottom, 10)
+            .frame(height: mapExpanded ? 440 : 250)
+
+            if let focus {
+                HStack(spacing: 10) {
+                    Text("\(focus.seq)").font(.system(size: 11, weight: .heavy)).foregroundStyle(.white)
+                        .frame(width: 20, height: 20).background(Circle().fill(Theme.red))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(focus.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
+                        if let addr = focus.address {
+                            Text(addr).font(.system(size: 12)).foregroundStyle(Theme.gray).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if let leg = nextLeg ?? (focus.seq == stops.first?.seq ? course.startLeg : nil) {
+                        Button { openLeg(leg) } label: {
+                            Text("다음 장소 길찾기").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.red)
+                                .padding(.horizontal, 10).frame(height: 28)
+                                .background(Capsule().fill(Theme.blueSoft))
+                        }
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(.white)
+            }
         }
-        .frame(height: 300)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .padding(.horizontal, 16).padding(.top, 8)
         .onAppear { resetCamera() }
+        .task(id: course.id) { await loadWalkRoutes(course) }
     }
 
-    private func routeChip(_ icon: String, _ text: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.red)
-            Text(text).font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.ink)
+    /// 구간별 실제 도보 경로 (MapKit). 실패하면 직선 유지
+    private func loadWalkRoutes(_ course: CourseDetail) async {
+        let stops = course.stops.sorted { $0.seq < $1.seq }
+        for (a, b) in zip(stops, stops.dropFirst()) {
+            let key = "\(course.id)-\(a.seq)"
+            guard walkRoutes[key] == nil else { continue }
+            let req = MKDirections.Request()
+            req.source = MKMapItem(placemark: MKPlacemark(coordinate: a.coordinate))
+            req.destination = MKMapItem(placemark: MKPlacemark(coordinate: b.coordinate))
+            req.transportType = .walking
+            guard let route = try? await MKDirections(request: req).calculate().routes.first else { continue }
+            let poly = route.polyline
+            var coords = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: poly.pointCount)
+            poly.getCoordinates(&coords, range: NSRange(location: 0, length: poly.pointCount))
+            walkRoutes[key] = [a.coordinate] + coords + [b.coordinate]
         }
-        .padding(.horizontal, 11).frame(height: 30)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.7), lineWidth: 1))
-        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 
     private func resetCamera() {
         guard let course else { return }
+        focusSeq = course.stops.map(\.seq).min() ?? 1
         camera = .rect(Self.fitRect(course.stops))
     }
 
@@ -230,7 +272,7 @@ struct CourseDetailView: View {
         let minSide = 1500.0   // 한 곳일 때 너무 확대되지 않게
         let w = max(rect.size.width, minSide), h = max(rect.size.height, minSide)
         rect = MKMapRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
-        return rect.insetBy(dx: -w * 0.32, dy: -h * 0.55)
+        return rect.insetBy(dx: -w * 0.3, dy: -h * 0.45)
     }
 
     // MARK: 1안/2안/3안
@@ -674,36 +716,47 @@ private struct CourseStamp: View {
     }
 }
 
-/// 경로 위 핀: 좌표 = 번호 원 중심. 이름 캡슐은 출발/도착에만 위로 띄워 겹침 방지
-private struct RoutePin: View {
-    let seq: Int
-    let name: String
-    var isStart = false
-    var isEnd = false
+extension CourseStop {
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+}
 
+/// 작은 번호 점 (선택되면 빨강 채움)
+private struct StopDot: View {
+    let seq: Int
+    let on: Bool
     var body: some View {
-        ZStack {
-            Circle().fill(Theme.red.opacity(0.18)).frame(width: 38, height: 38)
-            Circle().fill(Theme.red).frame(width: 26, height: 26)
-                .overlay(Circle().strokeBorder(.white, lineWidth: 2.5))
-                .shadow(color: Theme.red.opacity(0.45), radius: 6, y: 3)
-            Text("\(seq)").font(.system(size: 12, weight: .heavy)).foregroundStyle(.white)
-        }
-        .overlay(alignment: .top) {
-            if isStart || isEnd {
-                HStack(spacing: 4) {
-                    Text(isStart ? "START" : "FINISH")
-                        .font(.system(size: 8, weight: .heavy)).tracking(0.5).foregroundStyle(.white)
-                        .padding(.horizontal, 5).frame(height: 15)
-                        .background(Capsule().fill(Theme.ink))
-                    Text(name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
-                }
-                .padding(.horizontal, 8).frame(height: 24)
-                .background(Capsule().fill(.white))
-                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-                .fixedSize()
-                .offset(y: -28)
+        Text("\(seq)").font(.system(size: 10, weight: .heavy))
+            .foregroundStyle(on ? .white : Theme.red)
+            .frame(width: 20, height: 20)
+            .background(Circle().fill(on ? Theme.red : .white))
+            .overlay(Circle().strokeBorder(Theme.red, lineWidth: 2))
+            .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+            .padding(8)            // 탭 영역
+            .contentShape(Circle())
+    }
+}
+
+/// 선택한 장소 사진 핀 (흰 테두리 + 꼬리)
+private struct PhotoPin: View {
+    let url: URL?
+    var body: some View {
+        VStack(spacing: 0) {
+            AsyncImage(url: url) { phase in
+                if let img = phase.image { img.resizable().scaledToFill() } else { Theme.cream }
             }
+            .frame(width: 58, height: 58)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+            Triangle().fill(.white).frame(width: 12, height: 7)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
+        .allowsHitTesting(false)
+    }
+    private struct Triangle: Shape {
+        func path(in r: CGRect) -> Path {
+            var p = Path(); p.move(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+            p.addLine(to: CGPoint(x: r.midX, y: r.maxY)); p.closeSubpath(); return p
         }
     }
 }
