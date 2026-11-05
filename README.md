@@ -26,13 +26,14 @@ open Moment.xcodeproj
 | --- | --- | --- |
 | 홈 | 지도, 서울에서 뭐 하지?(장소·카테고리·북마크) | `/api/places` 연결 |
 | 만들기 | 사진 선택 → 스타일·분위기 → 완성 | `/api/shortforms` 연결 (AI 서버 미연결 시 기기 미리보기) |
-| 커뮤니티 | 검색·인기 태그·랜덤 탐색 그리드, 상세, 내 글 삭제, 만들기에서 게시 | `/api/community/posts` 연결 (좋아요·댓글은 서버 미지원) |
-| 탐색하기 | 여행 도장깨기 코스·미션 | 목업 — API 필요 |
+| 커뮤니티 | 검색·인기 태그·랜덤 탐색 그리드, 상세, 내 글 삭제, 만들기에서 게시 | `/api/community/posts` 연결, 영상 전용(video+cover 필수. AI 렌더 불가 시 사진을 기기에서 1080x1920 mp4 로 만들어 게시). 좋아요·댓글은 서버 미지원 |
+| 탐색하기 | 지역별 코스·미션, AI 맞춤 코스, 저장, 길찾기(네이버지도 → 없으면 구글맵), 미션 촬영 → 숏폼 | `/api/courses` 연결 (AI 추천·저장 포함, 촬영물은 메모리에만 보관) |
 | 더보기 | 계정, 내 북마크, 로그아웃, 회원탈퇴 | `/api/auth`, `/api/places/bookmarks` |
 
 로그인: 이메일, Google(ID 토큰 → `/api/auth/google`). access/refresh 토큰은 Keychain 저장, 401 시 자동 재발급.
 
 백엔드에 요청할 API는 [docs/BACKEND_REQUESTS.md](docs/BACKEND_REQUESTS.md) 참고.
+에이전트 작업 규칙은 [CLAUDE.md](CLAUDE.md) 참고.
 
 ## 디버그 실행 인자 (Debug 빌드 전용)
 
@@ -51,7 +52,7 @@ Moment/
   Create/     만들기(숏폼 파이프라인)
   Community/  커뮤니티 탐색·상세
   Reels/      영상 플레이어(공용)
-  Tour/       도장깨기
+  Tour/       탐색하기(코스 API 화면, TourStore)
   Theme/ Components/ Models/ Resources/
 Config/Info.plist   API 주소, Google 설정, ATS
 project.yml         XcodeGen 설정

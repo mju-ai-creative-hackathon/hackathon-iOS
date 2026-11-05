@@ -29,6 +29,7 @@ struct CreateView: View {
     @State private var needsLogin = false
     @State private var isSharing = false
     @State private var shareError: String?
+    @State private var pinned: [MediaItem] = []   // 코스 미션에서 넘어온 소스 (피커와 별개)
 
     /// 백엔드 제작 조건: 5~20개
     static let minCount = 5
@@ -62,6 +63,8 @@ struct CreateView: View {
             MusicSheet(selected: $request.music).presentationDetents([.medium])
         }
         .animation(.snappy(duration: 0.3), value: step)
+        .onAppear(perform: consumeDraft)
+        .onChange(of: store.createDraft != nil) { _, has in if has { consumeDraft() } }
         .alert("로그인이 필요해요", isPresented: $needsLogin) {
             Button("로그인") { auth.logout() }
             Button("취소", role: .cancel) {}
@@ -458,36 +461,36 @@ struct CreateView: View {
         }
     }
 
-    /// 커뮤니티 게시 (POST /api/community/posts)
-    /// AI 결과 영상이 있으면 영상 + 표지 사진, 없으면(기기 미리보기) 고른 사진 최대 10장을 올린다.
+    /// 커뮤니티 게시 (POST /api/community/posts) — 영상 전용: video + cover 사진
+    /// AI 결과 영상이 있으면 그걸 내려받아 올리고, 기기 미리보기면 고른 사진으로 mp4 를 만들어 올린다.
     private func shareResult() {
         guard result != nil, !shared, !isSharing else { return }
         guard auth.user != nil else { needsLogin = true; return }
         isSharing = true; shareError = nil
-        let req = request, video = resultVideo
+        let req = request, remote = resultVideo
         Task {
             defer { isSharing = false }
             do {
-                let photos = req.media.filter { if case .photo = $0.kind { true } else { false } }
-                var files: [UploadFile] = []
-                var cover: UploadFile?
-                if let video {
-                    let (data, _) = try await URLSession.shared.data(from: video)
-                    files = [UploadFile(data: data, filename: "shortform.mp4", mimeType: "video/mp4")]
-                    if let first = photos.first ?? req.media.first {
-                        cover = try ShortformPipeline.uploadFile(first, index: 0, maxImage: 10_485_760, maxVideo: 0)
-                    }
+                let stills = req.media.compactMap(\.thumbnail)
+                guard let first = stills.first else { throw ShortformPipeline.Failure.failed("올릴 사진이 없어요.") }
+                let videoData: Data
+                if let remote {
+                    videoData = try await URLSession.shared.data(from: remote).0
                 } else {
-                    files = try photos.prefix(10).enumerated().map { i, m in
-                        try ShortformPipeline.uploadFile(m, index: i, maxImage: 10_485_760, maxVideo: 0)
-                    }
+                    let local = try await SlideshowExporter.export(stills)
+                    defer { try? FileManager.default.removeItem(at: local) }
+                    videoData = try Data(contentsOf: local)
                 }
-                guard !files.isEmpty else { throw ShortformPipeline.Failure.failed("올릴 사진이 없어요.") }
+                guard videoData.count <= 100 * 1_048_576 else { throw ShortformPipeline.Failure.fileTooLarge("영상이 100MB를 넘어요.") }
+                let video = UploadFile(data: videoData, filename: "shortform.mp4", mimeType: "video/mp4")
+                let cover = try ShortformPipeline.uploadFile(MediaItem(kind: .photo(first)), index: 0,
+                                                             maxImage: 10_485_760, maxVideo: 0)
                 let title = String((req.caption.isEmpty ? req.style.headline : req.caption).prefix(100))
-                let body = CommunityCreateBody(title: title, caption: nil,
-                                               tags: ["서울", req.style.rawValue, req.mood.rawValue])
+                var tags = ["서울", req.style.rawValue, req.mood.rawValue]
+                if case .tour = req.source { tags.insert("도장깨기", at: 1) }
+                let body = CommunityCreateBody(title: title, caption: nil, tags: tags)
                 _ = try await auth.authorized {
-                    try await APIClient.shared.createCommunityPost(body, files: files, cover: cover, token: $0)
+                    try await APIClient.shared.createCommunityPost(body, video: video, cover: cover, token: $0)
                 }
                 withAnimation { shared = true }
             } catch {
@@ -499,25 +502,46 @@ struct CreateView: View {
     private func reset() {
         genTask?.cancel()
         request = ReelGenerationRequest(source: .gallery, media: [])
+        pinned = []
         pickerItems = []; result = nil; resultVideo = nil; genError = nil; aiUnavailable = false
         isLocalPreview = false; progress = 0; shared = false
         step = .photos
     }
 
     private func remove(_ item: MediaItem) {
+        if let p = pinned.firstIndex(where: { $0.id == item.id }) {
+            pinned.remove(at: p)
+            request.media.removeAll { $0.id == item.id }
+            if pinned.isEmpty { request.source = .gallery }
+            return
+        }
         guard let i = request.media.firstIndex(where: { $0.id == item.id }) else { return }
         request.media.remove(at: i)
-        if pickerItems.indices.contains(i) { pickerItems.remove(at: i) }
+        let pi = i - pinned.count
+        if pickerItems.indices.contains(pi) { pickerItems.remove(at: pi) }
+    }
+
+    /// 탐색하기에서 넘어온 코스 미션 사진·영상을 앞에 고정
+    private func consumeDraft() {
+        guard let draft = store.createDraft else { return }
+        store.createDraft = nil
+        genTask?.cancel()
+        pickerItems = []; result = nil; resultVideo = nil; genError = nil; shared = false
+        pinned = draft.media
+        request = ReelGenerationRequest(source: .tour(courseId: draft.courseId, missionIds: draft.missionIds),
+                                        media: draft.media)
+        request.caption = String(draft.title.prefix(100))
+        step = draft.media.count >= Self.minCount ? .style : .photos
     }
 
     private func load(_ items: [PhotosPickerItem]) async {
-        guard !items.isEmpty else { request.media = []; return }
+        guard !items.isEmpty else { request.media = pinned; return }
         isLoading = true
         var loaded: [MediaItem] = []
         for item in items {
             if let (m, _) = await MediaImport.load(item) { loaded.append(m) }
         }
-        request.media = loaded
+        request.media = pinned + loaded
         isLoading = false
     }
 }

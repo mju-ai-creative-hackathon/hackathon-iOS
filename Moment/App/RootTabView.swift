@@ -4,17 +4,20 @@ struct RootTabView: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        ZStack {
-            switch store.selectedTab {
-            case .home: HomeView()
-            case .create: CreateView()
-            case .reels: CommunityView()
-            case .tour: TourView()
-            case .more: MoreView()
+        // safeAreaInset 은 NavigationStack 안쪽 하단 버튼까지 전달되지 않아 VStack 으로 쌓는다
+        VStack(spacing: 0) {
+            ZStack {
+                switch store.selectedTab {
+                case .home: HomeView()
+                case .create: CreateView()
+                case .reels: CommunityView()
+                case .tour: TourView()
+                case .more: MoreView()
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            tabBar
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) { tabBar }
         // 다른 화면의 '릴스 만들기' 버튼 → 만들기 탭으로
         .onChange(of: store.isCreatingReel) { _, go in
             if go { store.selectedTab = .create; store.isCreatingReel = false }

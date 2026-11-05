@@ -1,5 +1,4 @@
 import SwiftUI
-import CoreLocation
 
 /// 릴스에 들어갈 미디어 한 조각 (갤러리/카메라에서 가져온 것)
 struct MediaItem: Identifiable {
@@ -63,7 +62,7 @@ enum MusicMood: String, CaseIterable, Identifiable {
 /// 릴스를 만드는 두 가지 루트
 enum ReelSource {
     case gallery                 // 루트1: 사용자가 직접 고른 사진/영상
-    case tour(courseID: UUID)    // 루트2: 여행 도장깨기 결과
+    case tour(courseId: Int64, missionIds: [Int64])   // 루트2: 탐색하기 코스 촬영 미션
 }
 
 /// 백엔드로 보낼 생성 요청
@@ -98,30 +97,4 @@ struct Reel: Identifiable {
     var isSaved: Bool = false
     var isMine: Bool = false
     var tourCourseTitle: String?   // 도장깨기로 만든 릴스면 코스명 배지
-}
-
-// MARK: - 여행 도장깨기
-
-struct TourSpot: Identifiable {
-    let id = UUID()
-    let name: String
-    let description: String
-    let mission: String              // "전망대 난간에서 바다를 배경으로 셀카"
-    let coordinate: CLLocationCoordinate2D
-    let previewURL: URL
-    var capturedPhoto: UIImage? = nil
-    var isStamped: Bool { capturedPhoto != nil }
-}
-
-struct TravelCourse: Identifiable {
-    let id = UUID()
-    let title: String                // "부산 바다 한 바퀴"
-    let region: String               // "부산"
-    let summary: String
-    let tags: [String]
-    let estimatedTime: String        // "약 5시간"
-    let coverURL: URL
-    var spots: [TourSpot]
-    var stampedCount: Int { spots.filter(\.isStamped).count }
-    var isCompleted: Bool { !spots.isEmpty && stampedCount == spots.count }
 }

@@ -38,7 +38,11 @@ struct ShortformPipeline {
 
         // 2) 프로젝트 생성
         onProgress(0.05, "프로젝트 만드는 중")
-        let project = try await auth.authorized { try await api.createShortform(title: title, token: $0) }
+        var courseId: Int64?, missionIds: [Int64] = []
+        if case .tour(let c, let m) = request.source { courseId = c; missionIds = m }
+        let project = try await auth.authorized {
+            try await api.createShortform(title: title, courseId: courseId, missionIds: missionIds, token: $0)
+        }
 
         // 3) 한 파일씩 업로드 (순서 유지, 요청 크기 제한 회피)
         var assetIds: [UUID] = []

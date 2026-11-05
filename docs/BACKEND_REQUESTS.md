@@ -5,24 +5,27 @@ iOS 앱에서 아직 목업으로 돌고 있는 기능과, 붙이기 위해 필�
 
 ## 1. 커뮤니티 — 탐색/등록/삭제는 연결 완료 (#4)
 
+영상 전용(`post` JSON + `video` + `cover`) 등록도 연결 완료.
+
 남은 요청:
 
 - 좋아요 `PUT/DELETE /api/community/posts/{id}/like`, 댓글 `GET/POST /api/community/posts/{id}/comments`
 - 내 게시물 목록 `GET /api/community/posts/mine` — explore 는 로그인 시 본인 글을 제외해서, 올린 뒤 내 글을 볼 곳이 없음
 - 숏폼 렌더 결과를 바로 게시하는 방법(`renderId` 로 게시) — 지금은 앱이 결과 영상을 내려받아 다시 업로드해야 함
 
-## 2. 탐색하기(여행 도장깨기) 코스·미션
+## 2. 탐색하기 코스·미션 — 연결 완료
 
-현재 코스 3개(부산·제주·경주)와 미션, 도장 기록이 모두 앱 내 목업이며 재시작 시 초기화됩니다.
-숏폼 업로드 API가 이미 `missionId`를 받으므로, 코스/미션 API만 있으면 "미션 사진 → 숏폼"이 실제로 연결됩니다.
-앱 컨셉이 서울이라 코스도 서울 기준이면 좋습니다.
+연결된 API: `GET /api/courses/regions`, `GET /api/courses`, `GET /api/courses/{id}`(정차지·구간·길찾기 URL·미션), `POST /api/courses/recommendations`(AI 맞춤), `PUT/DELETE /api/courses/{id}/save`, `GET /api/courses/saved`.
+숏폼 제작 시 `courseId` + `missionIds` 를 보내 AI `shootingHints` 에 연결함.
+
+남은 요청: 미션 촬영물(PHOTO/VIDEO)이 지금은 앱 메모리에만 있어 재시작 시 사라지고 도장 기록도 없음.
 
 | 메서드 | 경로 | 용도 |
 | --- | --- | --- |
-| GET | `/api/courses?region=` | 코스 목록 `{ id, title, region, summary, tags[], estimatedTime, coverUrl, missionCount, stampedCount }` |
-| GET | `/api/courses/{id}` | 코스 상세 + 미션 배열 `{ id, order, name, description, mission, latitude, longitude, previewUrl, stamped, stampedAt, photoUrl? }` |
-| POST | `/api/courses/{id}/missions/{missionId}/stamp` | 미션 사진 업로드(multipart) + 도장 처리. 위치 검증이 필요하면 `latitude, longitude` 함께 전송 |
+| POST | `/api/courses/{id}/missions/{missionId}/stamp` | 미션 촬영물 업로드(multipart) + 도장 처리. 위치 검증이 필요하면 `latitude, longitude` 함께 전송. 또는 숏폼 업로드 시 코스 미션 ID 를 연결하는 방식도 가능 |
 | GET | `/api/me/stamps` | 내 도장 현황(홈 '나의 도장 현황' 카드용) |
+
+- ID 통일 필요: 숏폼 `sources[].missionId` 는 UUID, 코스 미션 ID 는 숫자라 서로 연결이 안 됨 → 한쪽으로 맞춰주세요.
 
 ## 3. 작은 개선
 

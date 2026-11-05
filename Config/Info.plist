@@ -20,6 +20,10 @@
 			</array>
 		</dict>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>nmap</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- 로컬 개발 서버(http://localhost)만 예외 허용. 운영은 HTTPS 강제 -->

@@ -7,6 +7,7 @@ struct MomentApp: App {
     @State private var auth = AuthSession()
     @State private var places = PlacesStore()
     @State private var community = CommunityStore()
+    @State private var tour = TourStore()
 
     var body: some Scene {
         WindowGroup {
@@ -21,9 +22,9 @@ struct MomentApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: auth.state)
-            .task { places.attach(auth); community.attach(auth); await auth.restore() }
-            .onChange(of: auth.state) { _, _ in Task { await places.reloadForAuthChange(); await community.reload() } }
-            .environment(store).environment(auth).environment(places).environment(community)
+            .task { places.attach(auth); community.attach(auth); tour.attach(auth); await auth.restore() }
+            .onChange(of: auth.state) { _, _ in Task { await places.reloadForAuthChange(); await community.reload(); tour.clearRecommendations(); await tour.loadCourses() } }
+            .environment(store).environment(auth).environment(places).environment(community).environment(tour)
         }
     }
 }

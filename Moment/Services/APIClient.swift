@@ -104,7 +104,11 @@ struct ShortformProject: Codable, Identifiable {
     let assets: [ShortformAsset]
     let latestRender: ShortformRender?
 }
-struct ShortformCreateBody: Encodable { let title: String }
+struct ShortformCreateBody: Encodable {
+    let title: String
+    var courseId: Int64? = nil          // 코스 촬영 미션으로 만들 때 (선택)
+    var missionIds: [Int64]? = nil
+}
 struct ShortformRenderBody: Encodable {
     let style: String
     let mood: String
@@ -149,6 +153,81 @@ struct CommunityFeed: Codable {
 }
 struct CommunityTag: Codable, Hashable { let tag: String; let postCount: Int }
 struct CommunityCreateBody: Encodable { let title: String; let caption: String?; let tags: [String] }
+
+// MARK: 코스 DTO (Backend /api/courses)
+
+struct CourseSummary: Codable, Identifiable, Hashable {
+    let id: Int64
+    let title: String
+    let summary: String?
+    let region: String?
+    let source: String          // PRESET | AI
+    let totalMinutes: Int
+    let estimatedCost: Int?
+    let stopCount: Int
+    let stopNames: [String]
+    let thumbnailUrl: String?
+    let distanceMeters: Int?
+    var saved: Bool
+}
+
+struct CourseStop: Codable, Hashable, Identifiable {
+    let seq: Int
+    let name: String
+    let description: String?
+    let address: String?
+    let lat: Double
+    let lng: Double
+    let imageUrl: String?
+    let startTime: String?
+    let stayMinutes: Int
+    var id: Int { seq }
+}
+
+struct CourseLeg: Codable, Hashable {
+    let fromSeq: Int
+    let toSeq: Int
+    let fromName: String?
+    let toName: String?
+    let distanceMeters: Int
+    let estMinutes: Int
+    let mode: String            // WALK | PUBLIC
+    let naverMapUrl: String?
+    let googleMapsUrl: String?
+}
+
+struct CourseMission: Codable, Hashable, Identifiable {
+    let id: Int64
+    let stopSeq: Int
+    let kind: String            // PHOTO | VIDEO
+    let title: String
+    let guide: String?
+    let durationSec: Int?
+    var isVideo: Bool { kind == "VIDEO" }
+}
+
+struct CourseDetail: Codable, Identifiable, Hashable {
+    let id: Int64
+    let title: String
+    let summary: String?
+    let region: String?
+    let source: String
+    let totalMinutes: Int
+    let estimatedCost: Int?
+    let stopCount: Int
+    let thumbnailUrl: String?
+    let distanceMeters: Int?
+    let prompt: String?
+    let stops: [CourseStop]
+    let legs: [CourseLeg]
+    let startLeg: CourseLeg?
+    let missions: [CourseMission]
+    var saved: Bool
+}
+
+struct CourseSaveResult: Codable { let courseId: Int64; let saved: Bool }
+struct CourseRecommendBody: Encodable { let prompt: String; let lat: Double?; let lng: Double? }
+struct CourseRecommendResponse: Codable { let courses: [CourseDetail] }
 
 struct SignupBody: Encodable { let email: String; let name: String; let password: String }
 struct GoogleLoginBody: Encodable { let idToken: String }
@@ -279,8 +358,11 @@ struct APIClient {
         try await send("GET", "/api/shortforms/options", body: Optional<LoginBody>.none)
     }
 
-    func createShortform(title: String, token: String) async throws -> ShortformProject {
-        try await send("POST", "/api/shortforms", token: token, body: ShortformCreateBody(title: title))
+    func createShortform(title: String, courseId: Int64? = nil, missionIds: [Int64] = [],
+                         token: String) async throws -> ShortformProject {
+        let body = ShortformCreateBody(title: title, courseId: courseId,
+                                       missionIds: courseId == nil || missionIds.isEmpty ? nil : Array(missionIds.prefix(20)))
+        return try await send("POST", "/api/shortforms", token: token, body: body)
     }
 
     func shortform(id: UUID, token: String) async throws -> ShortformProject {
@@ -349,14 +431,57 @@ struct APIClient {
     }
 
     /// 게시물 등록: `post`(JSON) + `files`(1~10) + 첫 파일이 영상이면 `cover`(사진) 필수
-    func createCommunityPost(_ post: CommunityCreateBody, files: [UploadFile], cover: UploadFile?,
+    /// 커뮤니티는 숏폼 영상 전용: `post` JSON + `video` 1개 + `cover` 사진(필수)
+    func createCommunityPost(_ post: CommunityCreateBody, video: UploadFile, cover: UploadFile,
                              token: String) async throws -> CommunityPost {
-        var parts: [(name: String, file: UploadFile)] = [("post", UploadFile(data: try JSONEncoder().encode(post),
-                                                                              filename: "post.json", mimeType: "application/json"))]
-        parts += files.map { ("files", $0) }
-        if let cover { parts.append(("cover", cover)) }
+        let parts: [(name: String, file: UploadFile)] = [
+            ("post", UploadFile(data: try JSONEncoder().encode(post), filename: "post.json", mimeType: "application/json")),
+            ("video", video), ("cover", cover),
+        ]
         let (body, type) = Self.multipart(parts)
         return try await send("POST", "/api/community/posts", token: token, rawBody: body, contentType: type, timeout: 180)
+    }
+
+    // MARK: 코스 (탐색하기) — 목록·상세는 비로그인 가능, 저장·AI 추천은 로그인
+
+    func courseRegions() async throws -> [String] {
+        try await send("GET", "/api/courses/regions", body: Optional<LoginBody>.none)
+    }
+
+    func courses(region: String?, lat: Double?, lng: Double?, page: Int = 0, size: Int = 20,
+                 token: String?) async throws -> PageResponse<CourseSummary> {
+        var q = [URLQueryItem(name: "page", value: "\(page)"), URLQueryItem(name: "size", value: "\(size)")]
+        if let region { q.append(URLQueryItem(name: "region", value: region)) }
+        q += Self.location(lat, lng)
+        return try await send("GET", "/api/courses", query: q, token: token, body: Optional<LoginBody>.none)
+    }
+
+    func savedCourses(lat: Double?, lng: Double?, page: Int = 0, size: Int = 20,
+                      token: String) async throws -> PageResponse<CourseSummary> {
+        let q = [URLQueryItem(name: "page", value: "\(page)"), URLQueryItem(name: "size", value: "\(size)")] + Self.location(lat, lng)
+        return try await send("GET", "/api/courses/saved", query: q, token: token, body: Optional<LoginBody>.none)
+    }
+
+    func course(id: Int64, lat: Double?, lng: Double?, token: String?) async throws -> CourseDetail {
+        try await send("GET", "/api/courses/\(id)", query: Self.location(lat, lng), token: token, body: Optional<LoginBody>.none)
+    }
+
+    func setCourseSaved(id: Int64, on: Bool, token: String) async throws -> CourseSaveResult {
+        try await send(on ? "PUT" : "DELETE", "/api/courses/\(id)/save", token: token, body: Optional<LoginBody>.none)
+    }
+
+    /// AI 맞춤 코스 최대 3개. 10~30초 걸림, 하루 20회
+    func recommendCourses(prompt: String, lat: Double?, lng: Double?, token: String) async throws -> [CourseDetail] {
+        let body = try JSONEncoder().encode(CourseRecommendBody(prompt: prompt, lat: lat, lng: lng))
+        let r: CourseRecommendResponse = try await send("POST", "/api/courses/recommendations", token: token,
+                                                        rawBody: body, contentType: "application/json", timeout: 90)
+        return r.courses
+    }
+
+    private static func location(_ lat: Double?, _ lng: Double?) -> [URLQueryItem] {
+        guard let lat, let lng else { return [] }
+        return [URLQueryItem(name: "lat", value: String(format: "%.6f", lat)),
+                URLQueryItem(name: "lng", value: String(format: "%.6f", lng))]
     }
 
     /// 백엔드 상대 경로(/api/...) → 절대 URL
