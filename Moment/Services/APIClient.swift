@@ -541,8 +541,16 @@ struct APIClient {
 
     // MARK: 나의 기록 · 일정 일기장 (모두 로그인 필요)
 
+    /// 시각은 밀리초까지 보냄 (.iso8601 은 초 단위로 잘라서 일정 시작 직후 위치가 시작보다 이른 값이 됨)
     private static let isoEncoder: JSONEncoder = {
-        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .custom { date, enc in
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var c = enc.singleValueContainer()
+            try c.encode(f.string(from: date))
+        }
+        return e
     }()
 
     /// 일정 시작 (진행 중인 일정이 있으면 409)

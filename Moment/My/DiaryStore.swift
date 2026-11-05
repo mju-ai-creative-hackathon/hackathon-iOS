@@ -122,8 +122,14 @@ final class DiaryStore: NSObject, CLLocationManagerDelegate {
         defer { isBusy = false }
         stopSensors()
         await refreshSteps(from: a.startedAt)
-        let end = Date()
-        let pts = points.filter { $0.recordedAt >= a.startedAt && $0.recordedAt <= end }
+        // 서버 검증: startedAt ≤ 위치 시각(시간순) ≤ endedAt ≤ 서버 현재+30초.
+        // 서버 startedAt 은 마이크로초, 앱은 밀리초로 받으므로 1ms 여유를 두고 범위 안으로 맞춘다.
+        let start = a.startedAt.addingTimeInterval(0.002)
+        let now = Date()
+        var pts = points.filter { $0.recordedAt >= start && $0.recordedAt <= now }
+            .sorted { $0.recordedAt < $1.recordedAt }
+        if pts.count > 10_000 { pts = Array(pts.suffix(10_000)) }
+        let end = max(now, pts.last?.recordedAt ?? now, start)
         do {
             let d = try await auth.authorized {
                 try await self.api.completeDiary(id: a.id, body: DiaryCompleteBody(endedAt: end, steps: self.steps, points: pts), token: $0)
