@@ -146,7 +146,22 @@ struct MyView: View {
             MyDeck(list: list,
                    index: Binding(get: { min(index, list.count - 1) }, set: { index = $0 }),
                    onEdit: { editing = $0 })
+            if !diary.isTracking { startTripButton }
         }
+    }
+
+    /// 발자취 기록 시작 → 코스 선택 모달 (고르면 바로 기록 시작)
+    private var startTripButton: some View {
+        Button { pickingCourse = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "shoeprints.fill")
+                Text("발자취 기록 시작하기")
+            }
+            .font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+            .frame(maxWidth: .infinity).frame(height: 52)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
+        }
+        .padding(.top, 4)
     }
 
     private var current: DiarySummary? {
@@ -188,7 +203,7 @@ struct MyView: View {
             Button { pickingCourse = true } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "figure.walk")
-                    Text("여정 시작하기")
+                    Text("발자취 기록 시작하기")
                 }
                 .font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
                 .padding(.horizontal, 24).frame(height: 44)
@@ -236,8 +251,6 @@ private struct MyDeck: View {
             .contentShape(Rectangle())
             .simultaneousGesture(swipe)
 
-            thumbStrip
-            controls
         }
     }
 
@@ -287,57 +300,6 @@ private struct MyDeck: View {
         }
     }
 
-    private func jump(_ k: Int) {
-        if k == index + 1 { fly(next: true) }
-        else if k == index - 1 { fly(next: false) }
-        else if k != index { withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { index = k } }
-    }
-
-    private var thumbStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(list.indices, id: \.self) { k in
-                        Button { jump(k) } label: {
-                            MyDeckThumb(date: list[k].recordDate, selected: k == index)
-                        }
-                        .buttonStyle(.plain)
-                        .id(k)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-            }
-            .onAppear { proxy.scrollTo(index, anchor: .center) }
-            .onChange(of: index) { _, i in
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(i, anchor: .center) }
-            }
-        }
-    }
-
-    private var controls: some View {
-        HStack(spacing: 10) {
-            navButton("arrow.left", enabled: index > 0) { fly(next: false) }
-            navButton("arrow.right", enabled: index < list.count - 1) { fly(next: true) }
-            Spacer()
-            Text("\(index + 1)/\(list.count)")
-                .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.gray)
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 10)
-    }
-
-    private func navButton(_ icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon).font(.system(size: 14, weight: .bold))
-                .foregroundStyle(enabled ? Theme.ink : Theme.gray.opacity(0.35))
-                .frame(width: 38, height: 38)
-                .background(Circle().fill(.white))
-                .overlay(Circle().strokeBorder(Theme.line, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-    }
 }
 
 /// 덱 위치에 따른 오프셋·크기·기울기 (앞 카드는 드래그를 따라 3D 로 기운다)
@@ -549,26 +511,6 @@ private struct MyDeckRouteMap: View {
 
 // MARK: - 썸네일 타일
 
-private struct MyDeckThumb: View {
-    let date: String
-    let selected: Bool
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Image(systemName: "shoeprints.fill").font(.system(size: 10))
-                .foregroundStyle(selected ? Theme.red : Theme.gray.opacity(0.7))
-            Text(MyDeckFormat.shortDate(date))
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(selected ? Theme.red : Theme.ink)
-        }
-        .frame(width: 44, height: 44)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? Theme.blueSoft : .white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(selected ? Theme.red : Theme.line, lineWidth: selected ? 2 : 1))
-        .scaleEffect(selected ? 1.08 : 1)
-        .animation(.easeInOut(duration: 0.2), value: selected)
-    }
-}
 
 // MARK: - 덱 포맷
 
