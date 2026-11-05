@@ -161,6 +161,7 @@ struct MyView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
         }
+        .padding(.horizontal, 10)   // 덱 카드와 같은 폭
         .padding(.top, 4)
     }
 
