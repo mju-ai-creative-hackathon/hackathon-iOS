@@ -354,23 +354,28 @@ private struct MyDeckCard: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("메모").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
-                Button(action: onEdit) {
-                    let memo = detail?.memo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    ZStack(alignment: .topTrailing) {
-                        Text(memo.isEmpty ? "오늘의 여정을 기록해 보세요" : memo)
-                            .font(.system(size: 14))
-                            .foregroundStyle(memo.isEmpty ? Theme.gray.opacity(0.7) : Theme.ink)
-                            .lineLimit(4).multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
-                            .padding(.trailing, 22)
+                // 메모 영역 자체는 탭/스와이프에 반응하지 않고, 연필 버튼만 수정 모달을 연다 (덱 스와이프 방해 X)
+                let memo = detail?.memo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                ZStack(alignment: .topTrailing) {
+                    Text(memo.isEmpty ? "오늘의 여정을 기록해 보세요" : memo)
+                        .font(.system(size: 14))
+                        .foregroundStyle(memo.isEmpty ? Theme.gray.opacity(0.7) : Theme.ink)
+                        .lineLimit(4).multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+                        .padding(.trailing, 30)
+                    Button(action: onEdit) {
                         Image(systemName: "pencil")
-                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.gray)
+                            .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.gray)
+                            .frame(width: 36, height: 36)
+                            .background(Circle().fill(.white.opacity(0.7)))
+                            .contentShape(Circle())
                     }
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.line.opacity(0.4)))
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .offset(x: 8, y: -8)
+                    .accessibilityLabel("메모 수정")
                 }
-                .buttonStyle(.plain)
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.line.opacity(0.4)))
             }
         }
         .padding(14)
