@@ -161,7 +161,7 @@ struct MyView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
         }
-        .padding(.horizontal, 10)   // 덱 카드와 같은 폭
+        .padding(.horizontal, 0)
         .padding(.top, 4)
     }
 
@@ -248,7 +248,7 @@ private struct MyDeck: View {
                         .allowsHitTesting(rel == 0)
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.leading, 18).padding(.trailing, 40)
             .contentShape(Rectangle())
             .simultaneousGesture(swipe)
 
@@ -272,7 +272,7 @@ private struct MyDeck: View {
                 guard horizontal == true else { return }
                 var w = v.translation.width
                 if (w < 0 && index >= list.count - 1) || (w > 0 && index <= 0) { w *= 0.3 }
-                drag = w
+                drag = max(-170, min(170, w))   // 손가락을 따라가되 너무 멀리 안 가게
             }
             .onEnded { v in
                 let wasHorizontal = horizontal == true
@@ -290,10 +290,11 @@ private struct MyDeck: View {
         let target = index + (next ? 1 : -1)
         guard list.indices.contains(target) else { return }
         flying = true
-        withAnimation(.easeOut(duration: 0.2)) {
-            drag = next ? -440 : 440
+        // 멀리 날리지 않고 살짝 밀린 뒤 덱 뒤로 들어가듯 교체 (카드 스택 셔플)
+        withAnimation(.easeOut(duration: 0.16)) {
+            drag = next ? -150 : 150
         } completion: {
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 index = target
                 drag = 0
             }
@@ -311,15 +312,22 @@ private struct MyDeckPlacement: ViewModifier {
 
     func body(content: Content) -> some View {
         let a = abs(pos)
-        let x: CGFloat = pos >= 0 ? (pos <= 1 ? 14 * pos : 14 + 12 * (pos - 1)) : 14 * pos
+        // 뒤 카드가 오른쪽으로 확실히 비껴 보이게 (참고: 카드 스택 영상)
+        let x: CGFloat = pos >= 0 ? (pos <= 1 ? 26 * pos : 26 + 18 * (pos - 1)) : 26 * pos
         let tilt = front ? Double(max(-25, min(25, drag / 8))) : 0
         let spin = front ? Double(max(-6, min(6, drag / 40))) : 0
         content
-            .brightness(-0.05 * Double(a))
-            .opacity(a > 2.2 ? 0 : 1 - 0.12 * Double(a))
-            .scaleEffect(1 - 0.05 * a)
-            .rotationEffect(.degrees(Double(2 * pos) + spin))
+            // 밝은 배경에서도 뒤 카드가 보이도록 살짝 어둡게 + 테두리
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.black.opacity(front ? 0 : 0.035 * Double(min(a, 2)))).allowsHitTesting(false))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Theme.line, lineWidth: front ? 0 : 1).allowsHitTesting(false))
+            .brightness(-0.04 * Double(a))
+            .opacity(a > 2.2 ? 0 : 1 - 0.1 * Double(a))
+            .scaleEffect(1 - 0.06 * a, anchor: pos >= 0 ? .trailing : .leading)
+            .rotationEffect(.degrees(Double(3.5 * pos) + spin), anchor: .bottom)
             .rotation3DEffect(.degrees(tilt), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .shadow(color: .black.opacity(front ? 0.08 : 0.12), radius: front ? 14 : 8, x: 0, y: 4)
             .offset(x: x + (front ? drag : 0))
     }
 }
