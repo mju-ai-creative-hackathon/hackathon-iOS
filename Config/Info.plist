@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 백엔드 주소(공개 값, 비밀 아님). 로컬 서버로 테스트할 땐 실행 인자 -apiBaseURL http://localhost:8080 -->
+	<key>API_BASE_URL</key>
+	<string>https://3-39-47-78.sslip.io</string>
+	<!-- Google 로그인 (공개 값, 비밀 아님. Client Secret 은 앱에 절대 넣지 않음) -->
+	<key>GIDClientID</key>
+	<string>191486826471-8jjk5durjknko0dtg9r9fotf3krhd05q.apps.googleusercontent.com</string>
+	<!-- 백엔드가 ID 토큰 audience 로 검증하는 웹 클라이언트 ID -->
+	<key>GIDServerClientID</key>
+	<string>191486826471-hj88egpu3at3trb0uo5m08q7md915t5a.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.191486826471-8jjk5durjknko0dtg9r9fotf3krhd05q</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- 로컬 개발 서버(http://localhost)만 예외 허용. 운영은 HTTPS 강제 -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
