@@ -39,14 +39,31 @@ struct CourseDetailView: View {
     @State private var albumOpen = false
     @State private var albumItem: PhotosPickerItem?
 
+    // 발자취 상세 모드 (마이 탭의 완료된 일정에서 진입)
+    private let footprint: DiaryDetail?
+    private let footprintMeters: Double?
+    @State private var visits: [Int: Date] = [:]           // stop seq → 첫 방문 시각
+
     init(courseId: Int64) {
         self.courseId = courseId
+        self.footprint = nil
+        self.footprintMeters = nil
+        _options = State(initialValue: [])
+        _selected = State(initialValue: 0)
+    }
+
+    init(courseId: Int64, footprint: DiaryDetail) {
+        self.courseId = courseId
+        self.footprint = footprint
+        self.footprintMeters = Self.pathLength(footprint.points)
         _options = State(initialValue: [])
         _selected = State(initialValue: 0)
     }
 
     init(options: [CourseDetail], selected: Int = 0) {
         self.courseId = nil
+        self.footprint = nil
+        self.footprintMeters = nil
         _options = State(initialValue: options)
         _selected = State(initialValue: options.indices.contains(selected) ? selected : 0)
     }
@@ -64,10 +81,10 @@ struct CourseDetailView: View {
             }
         }
         .background(Theme.bg)
-        .navigationTitle(options.count > 1 ? "맞춤 코스" : "코스")
+        .navigationTitle(footprint != nil ? "발자취 기록" : (options.count > 1 ? "맞춤 코스" : "코스"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let course {
+            if let course, footprint == nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { toggleSave(course) } label: {
                         Image(systemName: isSaved(course) ? "bookmark.fill" : "bookmark")
@@ -126,6 +143,7 @@ struct CourseDetailView: View {
         do {
             options = [try await tour.detail(courseId)]
             selected = 0
+            if let footprint, let c = options.first { visits = Self.computeVisits(c.stops, footprint.points) }
             resetCamera()
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? "코스를 불러오지 못했어요."
@@ -151,7 +169,16 @@ struct CourseDetailView: View {
 
     // MARK: 본문
 
+    @ViewBuilder
     private func content(_ course: CourseDetail) -> some View {
+        if let footprint {
+            footprintContent(course, footprint)
+        } else {
+            normalContent(course)
+        }
+    }
+
+    private func normalContent(_ course: CourseDetail) -> some View {
         // 루트 탭바가 safeAreaInset 이라 하단 버튼은 VStack 으로 쌓아야 탭바에 안 가려짐
         VStack(spacing: 0) {
         ScrollView {
@@ -332,12 +359,20 @@ struct CourseDetailView: View {
     private func resetCamera() {
         guard let course else { return }
         focusSeq = course.stops.map(\.seq).min() ?? 1
-        camera = .rect(Self.fitRect(course.stops, origin: course.origin))
+        if let footprint {
+            let coords = course.stops.map(\.coordinate) + footprint.points.map(\.coordinate)
+            camera = .rect(Self.fitRect(coords))
+        } else {
+            camera = .rect(Self.fitRect(course.stops, origin: course.origin))
+        }
     }
 
     private static func fitRect(_ stops: [CourseStop], origin: CourseOrigin? = nil) -> MKMapRect {
-        let points = stops.map { MKMapPoint(CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng)) }
-            + (origin.map { [MKMapPoint($0.coordinate)] } ?? [])
+        fitRect(stops.map(\.coordinate) + (origin.map { [$0.coordinate] } ?? []))
+    }
+
+    private static func fitRect(_ coords: [CLLocationCoordinate2D]) -> MKMapRect {
+        let points = coords.map { MKMapPoint($0) }
         guard let first = points.first else { return .world }
         var rect = MKMapRect(origin: first, size: MKMapSize(width: 0, height: 0))
         for p in points.dropFirst() { rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0))) }
@@ -451,16 +486,16 @@ struct CourseDetailView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 if let start = course.startLeg {
-                    CourseLegRow(leg: start, title: "\(startName(start, course)) → \(start.toName ?? stops.first?.name ?? "")") { openLeg(start) }
+                    CourseLegRow(leg: start, title: "\(startName(start, course)) → \(start.toName ?? stops.first?.name ?? "")", showsRoute: footprint == nil) { openLeg(start) }
                 }
                 ForEach(Array(stops.enumerated()), id: \.element.id) { i, stop in
                     if multi && (i == 0 || stops[i - 1].dayNo != stop.dayNo) {
                         CourseDayHeader(day: stop.dayNo, startTime: stop.startTime, first: i == 0 && course.startLeg == nil)
                     }
-                    CourseStopRow(stop: stop)
+                    CourseStopRow(stop: stop, visit: visitState(stop))
                     if i + 1 < stops.count,
                        let leg = course.legs.first(where: { $0.fromSeq == stop.seq && $0.toSeq == stops[i + 1].seq }) {
-                        CourseLegRow(leg: leg, title: nil, nextDay: stops[i + 1].dayNo != stop.dayNo) { openLeg(leg) }
+                        CourseLegRow(leg: leg, title: nil, nextDay: stops[i + 1].dayNo != stop.dayNo, showsRoute: footprint == nil) { openLeg(leg) }
                     }
                 }
             }
@@ -482,12 +517,12 @@ struct CourseDetailView: View {
                     .background(Capsule().fill(Theme.red))
                 Text("촬영 미션").font(.system(size: 17, weight: .heavy)).foregroundStyle(Theme.ink)
                 Spacer()
-                Text("\(course.missions.count)개").font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Theme.gray)
+                Text(missionCountText(course)).font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(footprint != nil ? Theme.red : Theme.gray)
             }
             HStack(spacing: 8) {
                 Image(systemName: "sparkles").foregroundStyle(Theme.red)
-                Text("이 코스에서 찍어볼 장면들이에요. 사진·영상을 모으면 AI가 숏폼으로 편집해요")
+                Text(footprint != nil ? "다녀온 장면을 사진·영상으로 채우면 AI가 숏폼으로 편집해요" : "이 코스에서 찍어볼 장면들이에요. 사진·영상을 모으면 AI가 숏폼으로 편집해요")
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink)
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
@@ -506,11 +541,27 @@ struct CourseDetailView: View {
                     }
                     .padding(.top, 6)
                     ForEach(Array(list.enumerated()), id: \.element.id) { j, mission in
-                        CourseMissionCard(label: "\(seq)-\(j + 1)", mission: mission)
+                        missionCard("\(seq)-\(j + 1)", mission)
                     }
                 }
             }
         }
+    }
+
+    private func missionCountText(_ course: CourseDetail) -> String {
+        guard footprint != nil else { return "\(course.missions.count)개" }
+        let done = course.missions.filter { tour.captures[$0.id] != nil }.count
+        return "\(done)/\(course.missions.count) 완료"
+    }
+
+    private func missionCard(_ label: String, _ mission: CourseMission) -> some View {
+        CourseMissionCard(
+            label: label, mission: mission,
+            interactive: footprint != nil,
+            capture: tour.captures[mission.id],
+            onCamera: { cameraMission = mission },
+            onAlbum: { albumMission = mission; albumOpen = true }
+        )
     }
 
     // MARK: 하단 바
@@ -740,8 +791,15 @@ private func courseImageURL(_ s: String?) -> URL? {
     return URL(string: s).flatMap { $0.scheme == nil ? nil : $0 } ?? APIClient.shared.absolute(s)
 }
 
+/// 발자취 모드의 장소 방문 상태
+private enum StopVisit {
+    case visited(Date)
+    case missed
+}
+
 private struct CourseStopRow: View {
     let stop: CourseStop
+    var visit: StopVisit? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -756,7 +814,10 @@ private struct CourseStopRow: View {
             .frame(width: 56, height: 56)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(timeLine).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.red)
+                HStack(spacing: 6) {
+                    Text(timeLine).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.red)
+                    if let visit { visitBadge(visit) }
+                }
                 Text(stop.name).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
                 if let d = stop.description, !d.isEmpty {
                     Text(d).font(.system(size: 12)).foregroundStyle(Theme.gray).lineLimit(2)
@@ -770,6 +831,22 @@ private struct CourseStopRow: View {
         .padding(.vertical, 6)
     }
 
+    @ViewBuilder
+    private func visitBadge(_ visit: StopVisit) -> some View {
+        switch visit {
+        case .visited(let date):
+            Text("✓ \(CourseDetailView.clock(date)) 방문")
+                .font(.system(size: 10, weight: .heavy)).foregroundStyle(.white)
+                .padding(.horizontal, 7).frame(height: 18)
+                .background(Capsule().fill(Color(red: 0.13, green: 0.62, blue: 0.36)))
+        case .missed:
+            Text("미방문")
+                .font(.system(size: 10, weight: .heavy)).foregroundStyle(Theme.gray)
+                .padding(.horizontal, 7).frame(height: 18)
+                .background(Capsule().fill(Theme.line))
+        }
+    }
+
     private var timeLine: String {
         let stay = "\(CourseDetailView.duration(stop.stayMinutes)) 머물기"
         if let t = stop.startTime, !t.isEmpty { return "\(t.prefix(5)) · \(stay)" }
@@ -781,6 +858,7 @@ private struct CourseLegRow: View {
     let leg: CourseLeg
     let title: String?
     var nextDay = false
+    var showsRoute = true
     let onRoute: () -> Void
 
     var body: some View {
@@ -798,7 +876,7 @@ private struct CourseLegRow: View {
                 Text(summary).font(.system(size: 12)).foregroundStyle(Theme.gray)
             }
             Spacer(minLength: 4)
-            if leg.naverMapUrl != nil || leg.googleMapsUrl != nil {
+            if showsRoute, leg.naverMapUrl != nil || leg.googleMapsUrl != nil {
                 Button(action: onRoute) {
                     Text("길찾기").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.red)
                         .padding(.horizontal, 10).frame(height: 24)
@@ -841,6 +919,10 @@ private struct CourseDayHeader: View {
 private struct CourseMissionCard: View {
     let label: String
     let mission: CourseMission
+    var interactive = false                 // 발자취 모드에서만 촬영 가능
+    var capture: MediaItem? = nil
+    var onCamera: () -> Void = {}
+    var onAlbum: () -> Void = {}
     @State private var expanded = false
 
     var body: some View {
@@ -866,16 +948,40 @@ private struct CourseMissionCard: View {
                             .buttonStyle(.plain)
                     }
                 }
+                if interactive { captureMenu.padding(.top, 2) }
             }
             Spacer(minLength: 0)
-            // 추천 화면에서는 미션 소개만 (수행 X)
-            Image(systemName: mission.isVideo ? "video" : "camera")
-                .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.red.opacity(0.8))
-                .frame(width: 40, height: 40)
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
+            if interactive {
+                CourseStamp(image: capture?.thumbnail, captured: capture != nil, isVideo: mission.isVideo, size: 48)
+            } else {
+                // 추천 화면에서는 미션 소개만 (수행 X)
+                Image(systemName: mission.isVideo ? "video" : "camera")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.red.opacity(0.8))
+                    .frame(width: 40, height: 40)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.blueSoft))
+            }
         }
         .padding(12)
         .courseCardStyle()
+    }
+
+    private var captureMenu: some View {
+        Menu {
+            if CameraPicker.isAvailable {
+                Button { onCamera() } label: { Label("카메라로 찍기", systemImage: "camera") }
+            }
+            Button { onAlbum() } label: { Label("앨범에서 고르기", systemImage: "photo.on.rectangle") }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: mission.isVideo ? "video.fill" : "camera.fill")
+                Text(capture != nil ? "다시 찍기" : (mission.isVideo ? "영상 찍기" : "사진 찍기"))
+            }
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Theme.red)
+            .padding(.horizontal, 12).frame(height: 28)
+            .background(Capsule().fill(Theme.blueSoft.opacity(0.6)))
+            .overlay(Capsule().strokeBorder(Theme.red.opacity(0.4), lineWidth: 1))
+        }
     }
 }
 
@@ -991,5 +1097,275 @@ private struct PhotoPin: View {
             var p = Path(); p.move(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
             p.addLine(to: CGPoint(x: r.midX, y: r.maxY)); p.closeSubpath(); return p
         }
+    }
+}
+
+// MARK: - 발자취 상세 모드
+
+extension DiaryPoint {
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+}
+
+private let footprintGreen = Color(red: 0.13, green: 0.62, blue: 0.36)
+private let spotNavy = Color(red: 0.12, green: 0.18, blue: 0.32)
+
+extension CourseDetailView {
+    fileprivate func visitState(_ stop: CourseStop) -> StopVisit? {
+        guard footprint != nil else { return nil }
+        return visits[stop.seq].map { .visited($0) } ?? .missed
+    }
+
+    @ViewBuilder
+    fileprivate func footprintContent(_ course: CourseDetail, _ fp: DiaryDetail) -> some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    footprintSummary(course, fp).padding(.horizontal, 16).padding(.top, 8)
+                    footprintMap(course, fp)
+                    VStack(alignment: .leading, spacing: 16) {
+                        courseCard(course)
+                        schedule(course)
+                        if !course.missions.isEmpty { missions(course) }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 20)
+            }
+            .defaultScrollAnchor(.top)
+            footprintBottomBar(course, fp)
+        }
+    }
+
+    // 요약 카드
+    fileprivate func footprintSummary(_ course: CourseDetail, _ fp: DiaryDetail) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(fp.title).font(.system(size: 20, weight: .heavy)).foregroundStyle(Theme.ink)
+            HStack(spacing: 6) {
+                Text(fp.recordDate.replacingOccurrences(of: "-", with: "."))
+                Text("·")
+                Text("코스: \(course.title)").lineLimit(1)
+            }
+            .font(.system(size: 12)).foregroundStyle(Theme.gray)
+            HStack(spacing: 0) {
+                footprintStat("\(fp.steps) 걸음", "걸음 수")
+                Rectangle().fill(Theme.line).frame(width: 1, height: 32)
+                footprintStat(footprintMeters.map(Self.meterText) ?? "-", "이동 거리")
+                Rectangle().fill(Theme.line).frame(width: 1, height: 32)
+                footprintStat(fp.endedAt.map { Self.hms(fp.startedAt, $0) } ?? "-", "이동 시간")
+            }
+            .padding(.top, 8)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .courseCardStyle()
+    }
+
+    private func footprintStat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value).font(.system(size: 16, weight: .heavy)).foregroundStyle(Theme.red)
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            Text(label).font(.system(size: 11)).foregroundStyle(Theme.gray)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // 지도: 내 실제 발자취(빨강 실선) + 코스 스팟(네이비 번호 핀)
+    fileprivate func footprintMap(_ course: CourseDetail, _ fp: DiaryDetail) -> some View {
+        let stops = course.stops.sorted { $0.seq < $1.seq }
+        let focus = stops.first { $0.seq == focusSeq } ?? stops.first
+        return VStack(spacing: 0) {
+            ZStack(alignment: .bottomTrailing) {
+                footprintMapView(stops, fp, focus: focus)
+                FootprintLegend()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .allowsHitTesting(false)
+                Button { withAnimation(.snappy) { mapExpanded.toggle() } } label: {
+                    Image(systemName: mapExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                        .frame(width: 38, height: 38)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.92)))
+                        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
+                }
+                .padding(10)
+            }
+            .frame(height: mapExpanded ? 440 : 260)
+            if let focus { footprintFocusStrip(focus) }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .padding(.horizontal, 16)
+        .onAppear { resetCamera() }
+    }
+
+    private func footprintMapView(_ stops: [CourseStop], _ fp: DiaryDetail, focus: CourseStop?) -> some View {
+        let coords = fp.points.map(\.coordinate)
+        return Map(position: $camera) {
+            if coords.count >= 2 {
+                MapPolyline(coordinates: coords)
+                    .stroke(Theme.red, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+            }
+            ForEach(stops) { stop in
+                Annotation("", coordinate: stop.coordinate, anchor: .center) {
+                    Button { withAnimation(.snappy) { focusSeq = stop.seq } } label: {
+                        SpotPin(seq: stop.seq, visited: visits[stop.seq] != nil, on: stop.seq == focus?.seq)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if let start = coords.first {
+                Annotation("", coordinate: start, anchor: .center) {
+                    Circle().fill(footprintGreen).frame(width: 14, height: 14)
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 2.5))
+                        .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            if coords.count >= 2, let end = coords.last {
+                Annotation("", coordinate: end, anchor: .bottom) {
+                    Image(systemName: "mappin.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white, Theme.red)
+                        .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
+        .mapControlVisibility(.hidden)
+    }
+
+    private func footprintFocusStrip(_ focus: CourseStop) -> some View {
+        HStack(spacing: 10) {
+            Text("\(focus.seq)").font(.system(size: 11, weight: .heavy)).foregroundStyle(.white)
+                .frame(width: 20, height: 20).background(Circle().fill(spotNavy))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(focus.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
+                if let addr = focus.address {
+                    Text(addr).font(.system(size: 12)).foregroundStyle(Theme.gray).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if let t = visits[focus.seq] {
+                Text("✓ \(Self.clock(t)) 방문").font(.system(size: 11, weight: .heavy)).foregroundStyle(footprintGreen)
+            } else {
+                Text("미방문").font(.system(size: 11, weight: .heavy)).foregroundStyle(Theme.gray)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(.white)
+    }
+
+    // 하단: 촬영한 미션으로 숏폼 만들기
+    @ViewBuilder
+    fileprivate func footprintBottomBar(_ course: CourseDetail, _ fp: DiaryDetail) -> some View {
+        let captured = capturedMissions(course)
+        if !captured.isEmpty {
+            Button {
+                store.createDraft = CreateDraft(title: fp.title, media: captured.map(\.1),
+                                                courseId: course.id, missionIds: captured.map(\.0.id))
+                store.selectedTab = .create
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                    Text("촬영한 미션으로 숏폼 만들기 (\(captured.count))")
+                }
+                .font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+                .frame(maxWidth: .infinity).frame(height: 50)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.red))
+            }
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
+            .background(Theme.bg.overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) })
+        }
+    }
+
+    // MARK: 계산·포맷
+
+    static func pathLength(_ points: [DiaryPoint]) -> Double? {
+        guard points.count >= 2 else { return nil }
+        var total = 0.0
+        for (a, b) in zip(points, points.dropFirst()) {
+            total += CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        }
+        return total
+    }
+
+    /// 장소 좌표 80m 안에 처음 들어온 발자취 점의 시각
+    static func computeVisits(_ stops: [CourseStop], _ points: [DiaryPoint]) -> [Int: Date] {
+        let sorted = points.sorted { $0.recordedAt < $1.recordedAt }
+        let locs = sorted.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        var result: [Int: Date] = [:]
+        for stop in stops {
+            let target = CLLocation(latitude: stop.lat, longitude: stop.lng)
+            if let i = locs.firstIndex(where: { $0.distance(from: target) <= 80 }) {
+                result[stop.seq] = sorted[i].recordedAt
+            }
+        }
+        return result
+    }
+
+    static func meterText(_ m: Double) -> String {
+        m < 1000 ? "\(Int(m.rounded())) m" : String(format: "%.1f km", m / 1000)
+    }
+
+    static func hms(_ start: Date, _ end: Date) -> String {
+        let sec = max(0, Int(end.timeIntervalSince(start)))
+        return String(format: "%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60)
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.timeZone = TimeZone(identifier: "Asia/Seoul") ?? .current
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    static func clock(_ date: Date) -> String { clockFormatter.string(from: date) }
+}
+
+/// 코스 스팟 핀 (네이비): 방문 = 채움 + 체크, 미방문 = 외곽선
+private struct SpotPin: View {
+    let seq: Int
+    let visited: Bool
+    let on: Bool
+    var body: some View {
+        Text("\(seq)").font(.system(size: 10, weight: .heavy))
+            .foregroundStyle(visited ? .white : spotNavy)
+            .frame(width: on ? 24 : 20, height: on ? 24 : 20)
+            .background(Circle().fill(visited ? spotNavy : .white))
+            .overlay(Circle().strokeBorder(spotNavy, lineWidth: 2))
+            .overlay(alignment: .topTrailing) {
+                if visited {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white, footprintGreen)
+                        .offset(x: 4, y: -4)
+                }
+            }
+            .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+            .padding(8)
+            .contentShape(Circle())
+    }
+}
+
+/// 지도 범례: 내 발자취 / 코스 스팟
+private struct FootprintLegend: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                Capsule().fill(Theme.red).frame(width: 16, height: 4)
+                Text("내 발자취")
+            }
+            HStack(spacing: 4) {
+                Circle().fill(spotNavy).frame(width: 9, height: 9)
+                Text("코스 스팟")
+            }
+        }
+        .font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ink)
+        .padding(.horizontal, 9).frame(height: 24)
+        .background(Capsule().fill(.white.opacity(0.92)))
+        .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
     }
 }

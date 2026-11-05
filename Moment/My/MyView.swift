@@ -15,6 +15,7 @@ struct MyView: View {
     @State private var selectedPost: CommunityPost?
     @State private var actionError: String?
     @State private var pickingCourse = false
+    @State private var openFootprint: DiaryDetail?    // 발자취 상세 (코스 + 실제 경로)
 
     private var completed: [DiarySummary] { diary.diaries.filter { $0.status != "ACTIVE" } }
 
@@ -28,6 +29,9 @@ struct MyView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.bg, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { deckToolbar } }
+            .navigationDestination(item: $openFootprint) { d in
+                if let cid = d.courseId { CourseDetailView(courseId: cid, footprint: d) }
+            }
         }
         .task { await reload() }
         .sheet(isPresented: $pickingCourse) {
@@ -145,7 +149,13 @@ struct MyView: View {
         } else {
             MyDeck(list: list,
                    index: Binding(get: { min(index, list.count - 1) }, set: { index = $0 }),
-                   onEdit: { editing = $0 })
+                   onEdit: { editing = $0 },
+                   onOpen: { sum in
+                       Task {
+                           if let d = await diary.detail(sum.id), d.courseId != nil { openFootprint = d }
+                           else { actionError = "이 기록에 연결된 코스 정보를 불러오지 못했어요." }
+                       }
+                   })
             if !diary.isTracking { startTripButton }
         }
     }
@@ -227,6 +237,7 @@ private struct MyDeck: View {
     let list: [DiarySummary]
     @Binding var index: Int
     var onEdit: (DiarySummary) -> Void
+    var onOpen: (DiarySummary) -> Void = { _ in }
 
     @State private var drag: CGFloat = 0
     @State private var horizontal: Bool?
@@ -242,6 +253,8 @@ private struct MyDeck: View {
                 ForEach(window, id: \.self) { k in
                     let rel = k - index
                     MyDeckCard(summary: list[k], onEdit: { onEdit(list[k]) })
+                        .contentShape(Rectangle())
+                        .onTapGesture { if rel == 0, drag == 0 { onOpen(list[k]) } }
                         .modifier(MyDeckPlacement(pos: position(rel), front: rel == 0, drag: drag))
                         .zIndex(rel == 0 ? 10 : (rel > 0 ? Double(10 - rel) : 8.5))
                         .allowsHitTesting(rel == 0)
