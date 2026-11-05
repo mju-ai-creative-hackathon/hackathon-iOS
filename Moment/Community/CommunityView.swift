@@ -11,6 +11,7 @@ struct CommunityView: View {
     @State private var viewport: CGSize = .zero
     @State private var pinned: UUID?
     @State private var playing: UUID?
+    @State private var settleTask: Task<Void, Never>?   // 스크롤 멈춤 감지(마지막 움직임 후 0.25초)
     @FocusState private var searching: Bool
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
@@ -38,7 +39,21 @@ struct CommunityView: View {
             }
             .coordinateSpace(name: "grid")
             .background(GeometryReader { g in Color.clear.onAppear { viewport = g.size }.onChange(of: g.size) { _, v in viewport = v } })
-            .onPreferenceChange(CellFrameKey.self) { f in frames = f; updatePlaying() }
+            .onPreferenceChange(CellFrameKey.self) { f in
+                // 셀 위치가 바뀜 = 스크롤 중 → 재생·고정 모두 취소, 멈추면 다시 고르기
+                let moved = f.contains { id, r in frames[id].map { abs($0.minY - r.minY) > 0.5 } ?? false }
+                frames = f
+                if moved {
+                    pinned = nil
+                    if playing != nil { playing = nil }
+                }
+                settleTask?.cancel()
+                settleTask = Task {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                    updatePlaying()
+                }
+            }
             .onChange(of: community.posts.map(\.id)) { _, ids in
                 if let p = pinned, !ids.contains(p) { pinned = nil }
                 updatePlaying()
