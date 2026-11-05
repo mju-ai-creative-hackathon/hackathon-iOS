@@ -489,7 +489,8 @@ struct CreateView: View {
                 let title = String((req.caption.isEmpty ? req.style.headline : req.caption).prefix(100))
                 var tags = ["서울", req.style.rawValue, req.mood.rawValue]
                 if case .tour = req.source { tags.insert("도장깨기", at: 1) }
-                let body = CommunityCreateBody(title: title, caption: nil, tags: tags)
+                var body = CommunityCreateBody(title: title, caption: nil, tags: tags)
+                if case .tour(let cid, _) = req.source { body.courseId = cid }   // 코스 연결 → 다른 사람이 가져오기 가능
                 let post = try await auth.authorized {
                     try await APIClient.shared.createCommunityPost(body, video: video, cover: cover, token: $0)
                 }

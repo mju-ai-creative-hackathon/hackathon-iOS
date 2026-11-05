@@ -97,7 +97,50 @@ struct ShortformRender: Codable, Identifiable {
     let thumbnailUrl: String?
     let errorCode: String?
     let errorMessage: String?
+    // 검토 흐름 (AI 서버 검토·승인 연동)
+    let phase: String?              // DRAFTING | AWAITING_REVIEW | RENDERING | DONE
+    let reviewBusy: Bool?
+    let progress: ShortformProgress?
+    let storyboardVersion: Int?
+    let reviewError: String?
+    var isAwaitingReview: Bool { status == .PROCESSING && phase == "AWAITING_REVIEW" }
 }
+struct ShortformProgress: Codable, Hashable { let stage: String?; let message: String?; let current: Int?; let total: Int? }
+
+/// 임의 JSON (스토리보드는 AI 서버 형식(snake_case) 그대로 주고받으므로 모르는 키도 보존)
+enum JSONValue: Codable, Hashable {
+    case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let n = try? c.decode(Double.self) { self = .number(n) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try c.encode(s)
+        case .number(let n): if n == n.rounded(), abs(n) < 1e15 { try c.encode(Int64(n)) } else { try c.encode(n) }
+        case .bool(let b): try c.encode(b)
+        case .object(let o): try c.encode(o)
+        case .array(let a): try c.encode(a)
+        case .null: try c.encodeNil()
+        }
+    }
+    subscript(key: String) -> JSONValue? { if case .object(let o) = self { o[key] } else { nil } }
+    var string: String? { if case .string(let s) = self { s } else if case .number(let n) = self { n == n.rounded() ? String(Int64(n)) : String(n) } else { nil } }
+    var int: Int? { if case .number(let n) = self { Int(n) } else { nil } }
+    var array: [JSONValue]? { if case .array(let a) = self { a } else { nil } }
+    var object: [String: JSONValue]? { if case .object(let o) = self { o } else { nil } }
+}
+
+/// 스토리보드 저장 결과 {version, changed, changes, warnings}
+struct StoryboardSaveResult: Codable { let version: Int?; let changed: Bool?; let warnings: [JSONValue]? }
+struct StoryboardRegenBody: Encodable { let cut_ids: [String]; let fields: [String]? }
+struct StoryboardApproveBody: Encodable { let version: Int; let acceptWarnings: Bool }
 struct ShortformProject: Codable, Identifiable {
     let id: UUID
     let title: String
@@ -142,6 +185,7 @@ struct CommunityPost: Codable, Hashable, Identifiable {
     let tags: [String]
     let thumbnailUrl: String?
     let media: [CommunityMedia]
+    var course: CommunityLinkedCourse? = nil   // 게시물에 연결된 코스 (가져오기 가능)
     let createdAt: Date?
 }
 struct CommunityFeed: Codable {
@@ -167,7 +211,13 @@ struct CommunityComment: Codable, Identifiable, Hashable {
 }
 struct CommentWriteBody: Encodable { let content: String }
 
-struct CommunityCreateBody: Encodable { let title: String; let caption: String?; let tags: [String] }
+struct CommunityCreateBody: Encodable {
+    let title: String; let caption: String?; let tags: [String]
+    var courseId: Int64? = nil      // 선택: 연결할 코스 (프리셋 또는 내 코스)
+}
+struct CommunityLinkedCourse: Codable, Hashable { let id: Int64; let title: String? }
+struct CommunityImportResult: Codable { let courseId: Int64; let diary: DiaryDetail }
+struct RemainingRefineBody: Encodable { let completedThroughStopSeq: Int; let prompt: String; let lat: Double?; let lng: Double? }
 
 // MARK: 코스 DTO (Backend /api/courses)
 
@@ -307,12 +357,15 @@ struct APIErrorBody: Decodable {
     let code: String?
     let message: String?
     let errors: [String: String]?
+    let details: JSONValue?         // 스토리보드 검토 오류 등 (warnings, changes, issues)
 }
 
 enum APIError: LocalizedError {
     case server(status: Int, message: String, fieldErrors: [String: String])
     case network(String)
     case decoding
+    /// 코드가 있는 업무 오류 (예: WARNINGS_NOT_ACCEPTED, STALE_BASE_VERSION) + details
+    case coded(status: Int, code: String, message: String, details: JSONValue?)
 
     var errorDescription: String? {
         switch self {
@@ -321,9 +374,16 @@ enum APIError: LocalizedError {
             return fields.values.first ?? message
         case .network(let m): return m
         case .decoding: return "서버 응답을 해석하지 못했어요."
+        case .coded(_, _, let m, _): return m
         }
     }
-    var status: Int? { if case .server(let s, _, _) = self { return s }; return nil }
+    var status: Int? {
+        if case .server(let s, _, _) = self { return s }
+        if case .coded(let s, _, _, _) = self { return s }
+        return nil
+    }
+    var code: String? { if case .coded(_, let c, _, _) = self { return c }; return nil }
+    var details: JSONValue? { if case .coded(_, _, _, let d) = self { return d }; return nil }
     var fieldErrors: [String: String] {
         if case .server(_, _, let f) = self { return f }
         return [:]
@@ -511,6 +571,55 @@ struct APIClient {
         return try await send("POST", "/api/community/posts", token: token, rawBody: body, contentType: type, timeout: 180)
     }
 
+    // MARK: 숏폼 스토리보드 검토 (phase=AWAITING_REVIEW 일 때 수정·재생성·승인)
+
+    private func renderPath(_ p: UUID, _ r: UUID) -> String {
+        "/api/shortforms/\(p.uuidString.lowercased())/renders/\(r.uuidString.lowercased())"
+    }
+
+    /// 스토리보드 원본 JSON (version, title, cuts[], photos[], warnings) — 미디어 URL 은 서명 URL(1시간)
+    func storyboard(projectId: UUID, renderId: UUID, version: Int? = nil, token: String) async throws -> JSONValue {
+        let q = version.map { [URLQueryItem(name: "version", value: "\($0)")] } ?? []
+        return try await send("GET", renderPath(projectId, renderId) + "/storyboard", query: q, token: token,
+                              body: Optional<LoginBody>.none)
+    }
+
+    /// 수정본 저장 → 새 버전. body 는 {base_version, title, cuts:[...]} (snake_case 그대로)
+    func saveStoryboard(projectId: UUID, renderId: UUID, body: JSONValue, token: String) async throws -> StoryboardSaveResult {
+        try await send("PUT", renderPath(projectId, renderId) + "/storyboard", token: token,
+                       rawBody: try JSONEncoder().encode(body), contentType: "application/json", timeout: 60)
+    }
+
+    /// 지정 컷·항목 AI 재생성 (202 + 제작 상태, reviewBusy=true)
+    func regenStoryboard(projectId: UUID, renderId: UUID, cutIds: [String], fields: [String]?, token: String) async throws -> ShortformRender {
+        try await send("POST", renderPath(projectId, renderId) + "/storyboard/regen", token: token,
+                       body: StoryboardRegenBody(cut_ids: cutIds, fields: fields))
+    }
+
+    /// 승인하고 영상 생성 시작 → phase=RENDERING
+    func approveStoryboard(projectId: UUID, renderId: UUID, version: Int, acceptWarnings: Bool, token: String) async throws -> ShortformRender {
+        try await send("POST", renderPath(projectId, renderId) + "/approve", token: token,
+                       rawBody: try JSONEncoder().encode(StoryboardApproveBody(version: version, acceptWarnings: acceptWarnings)),
+                       contentType: "application/json", timeout: 60)
+    }
+
+    // MARK: 커뮤니티 코스 가져오기 → 내 코스로 복제 + 여행 기록 바로 시작
+
+    func importCommunityCourse(postId: UUID, token: String) async throws -> CommunityImportResult {
+        try await send("POST", "/api/community/posts/\(postId.uuidString.lowercased())/import", token: token,
+                       body: Optional<LoginBody>.none)
+    }
+
+    // MARK: 진행 중 코스: 완료한 장소 유지 + 남은 일정 수정 → 새 AI 코스
+
+    func refineRemaining(courseId: Int64, completedThroughStopSeq: Int, prompt: String, lat: Double?, lng: Double?,
+                         token: String) async throws -> CourseDetail {
+        let body = try JSONEncoder().encode(RemainingRefineBody(completedThroughStopSeq: completedThroughStopSeq,
+                                                                prompt: prompt, lat: lat, lng: lng))
+        return try await send("POST", "/api/courses/\(courseId)/remaining-refinements", token: token,
+                              rawBody: body, contentType: "application/json", timeout: 90)
+    }
+
     // MARK: 커뮤니티 댓글 — 목록은 비로그인 가능, 작성·수정·삭제는 본인만
 
     func comments(postId: UUID, page: Int = 0, size: Int = 20) async throws -> PageResponse<CommunityComment> {
@@ -689,6 +798,9 @@ struct APIClient {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let e = try? decoder.decode(APIErrorBody.self, from: data)
+            if let code = e?.code, (e?.errors ?? [:]).isEmpty, e?.details != nil {
+                throw APIError.coded(status: status, code: code, message: e?.message ?? "요청에 실패했어요. (\(status))", details: e?.details)
+            }
             throw APIError.server(status: status, message: e?.message ?? "요청에 실패했어요. (\(status))",
                                   fieldErrors: e?.errors ?? [:])
         }
