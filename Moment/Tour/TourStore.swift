@@ -64,6 +64,16 @@ final class TourStore {
         }
     }
 
+    /// 마이 탭 '저장한 코스' (로그인 필요)
+    private(set) var savedCourses: [CourseSummary] = []
+    func loadSaved() async {
+        guard let auth, auth.user != nil else { savedCourses = []; return }
+        let (lat, lng) = location.latLng
+        if let page = try? await auth.authorized({ try await self.api.savedCourses(lat: lat, lng: lng, token: $0) }) {
+            savedCourses = page.content
+        }
+    }
+
     func detail(_ id: Int64) async throws -> CourseDetail {
         let (lat, lng) = location.latLng
         return try await optional { try await self.api.course(id: id, lat: lat, lng: lng, token: $0) }
@@ -127,6 +137,7 @@ final class TourStore {
         if let i = courses.firstIndex(where: { $0.id == id }) { courses[i].saved = r.saved }
         if let i = recommendations.firstIndex(where: { $0.id == id }) { recommendations[i].saved = r.saved }
         if region == Self.savedFilter, !r.saved { courses.removeAll { $0.id == id } }
+        if r.saved { Task { await loadSaved() } } else { savedCourses.removeAll { $0.id == id } }
         return r.saved
     }
 

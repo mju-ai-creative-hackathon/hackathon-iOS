@@ -8,6 +8,7 @@ struct MyView: View {
     @Environment(CommunityStore.self) private var community
     @Environment(AppStore.self) private var store
     @Environment(AuthSession.self) private var auth
+    @Environment(TourStore.self) private var tour
 
     @State private var index = 0
     @State private var editing: DiarySummary?
@@ -26,6 +27,7 @@ struct MyView: View {
             .navigationTitle("나만의 기록")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.bg, for: .navigationBar)
+            .navigationDestination(for: CourseSummary.self) { c in CourseDetailView(courseId: c.id) }
         }
         .task { await reload() }
         .sheet(item: $editing) { d in
@@ -52,6 +54,7 @@ struct MyView: View {
     private func reload() async {
         await diary.load()
         await community.loadMine()
+        await tour.loadSaved()
     }
 
     // MARK: 비로그인
@@ -81,6 +84,7 @@ struct MyView: View {
                 if let a = diary.active { activeBanner(a) }
                 diaryCard
                 vlogSection
+                savedSection
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -239,6 +243,100 @@ struct MyView: View {
                 .padding(.horizontal, -16)
             }
         }
+    }
+
+    // MARK: 내가 저장한 코스
+
+    private var savedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("내가 저장한 코스").font(.system(size: 18, weight: .heavy)).foregroundStyle(Theme.ink)
+                if !tour.savedCourses.isEmpty {
+                    Text("\(tour.savedCourses.count)").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.red)
+                }
+            }
+            if tour.savedCourses.isEmpty {
+                VStack(spacing: 8) {
+                    Text("저장한 코스가 없어요").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.ink)
+                    Text("홈에서 마음에 드는 코스의 북마크를 눌러 저장해 보세요")
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.gray)
+                        .multilineTextAlignment(.center).padding(.horizontal, 16)
+                    Button { store.selectedTab = .home } label: {
+                        Text("코스 둘러보기").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.red)
+                            .padding(.horizontal, 16).frame(height: 34)
+                            .background(Capsule().fill(Theme.blueSoft))
+                    }
+                    .padding(.top, 2)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 22)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+            } else {
+                LazyVStack(spacing: 10) {
+                    ForEach(tour.savedCourses) { course in
+                        NavigationLink(value: course) {
+                            MySavedCourseRow(course: course) { unsave(course.id) }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func unsave(_ id: Int64) {
+        Task {
+            do { _ = try await tour.setSaved(id, false) }
+            catch { actionError = (error as? LocalizedError)?.errorDescription ?? "저장을 해제하지 못했어요." }
+        }
+    }
+}
+
+// MARK: - 저장한 코스 행
+
+private struct MySavedCourseRow: View {
+    let course: CourseSummary
+    var onUnsave: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Theme.blueSoft
+                .frame(width: 72, height: 72)
+                .overlay { CachedImage(url: CourseFormat.imageURL(course.thumbnailUrl)) }
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    if let r = course.region, !r.isEmpty {
+                        Text(r).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.red)
+                    }
+                    if course.source == "AI" {
+                        Text("AI").font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
+                            .padding(.horizontal, 5).frame(height: 15)
+                            .background(Capsule().fill(Theme.red))
+                    }
+                }
+                Text(course.title).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink).lineLimit(1)
+                if !course.stopNames.isEmpty {
+                    Text(course.stopNames.joined(separator: " → "))
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.gray).lineLimit(1)
+                }
+                Text("\(CourseFormat.duration(course.totalMinutes)) · \(CourseFormat.cost(course.estimatedCost))")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.gray)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onUnsave) {
+                Image(systemName: "bookmark.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.red)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
