@@ -277,11 +277,11 @@ private struct GridCell: View {
         p.play()
         // 실제로 프레임이 진행되기 시작하면 표시 (버퍼링 중 멈춘 첫 화면 방지)
         Task {
-            let t0 = p.player.currentTime().seconds
             for _ in 0..<80 {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard isPlaying else { return }
-                if p.player.timeControlStatus == .playing, p.player.currentTime().seconds > t0 + 0.03 { started = true; return }
+                let t = p.player.currentTime().seconds   // 처음엔 nan 일 수 있음
+                if p.player.timeControlStatus == .playing, t.isFinite, t > 0.04 { started = true; return }
             }
         }
     }
